@@ -3,19 +3,22 @@
  * Plugin Name: AI Mass Article Creator
  * Plugin URI: https://github.com/portallcomua/ai-mass-article-creator
  * Description: Generate 1-20 unique SEO articles with AI, automatic images, and 3-5 REAL user comments per article
- * Version: 2.3.1
+ * Version: 2.3.2
  * Author: UAServer
  * Author URI: https://uaserver.pp.ua
  * License: GPL v2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * GitHub Plugin URI: portallcomua/ai-mass-article-creator
  * Requires PHP: 7.4
  * Requires at least: 5.8
  * Tested up to: 6.5
+ * Text Domain: amac
+ * Domain Path: /languages
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('AMAC_VERSION', '2.3.1');
+define('AMAC_VERSION', '2.3.2');
 
 class AI_Mass_Article_Creator {
 
@@ -30,6 +33,7 @@ class AI_Mass_Article_Creator {
         add_action('admin_enqueue_scripts', array($this, 'enqueue_scripts'));
         add_action('admin_notices', array($this, 'show_admin_notices'));
 
+        // GitHub автооновлення
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_github_updates'));
         add_filter('plugins_api', array($this, 'github_plugin_info'), 10, 3);
     }
@@ -93,7 +97,7 @@ class AI_Mass_Article_Creator {
                         if (response.success) {
                             $("#amac-log").append("<div style=\"color:#46b450;padding:5px;\">✅ " + response.data.message + "</div>");
                             if (response.data.results && response.data.results.length) {
-                                var html = "<table class=\"amac-results-table\"><thead><tr><th>#</th><th>Заголовок</th><th>Коментарі</th><th>Фото</th><th>Дія</th></td></thead><tbody>";
+                                var html = "<table class=\"amac-results-table\"><thead><tr><th>#</th><th>Заголовок</th><th>Коментарі</th><th>Фото</th><th>Дія</th></tr></thead><tbody>";
                                 $.each(response.data.results, function(i, post) {
                                     html += "<tr>";
                                     html += "<td>" + (i+1) + "</td>";
@@ -159,6 +163,9 @@ class AI_Mass_Article_Creator {
         if (isset($_POST['unsplash_key'])) {
             update_option('amac_unsplash_key', sanitize_text_field($_POST['unsplash_key']));
         }
+        if (isset($_POST['pexels_key'])) {
+            update_option('amac_pexels_key', sanitize_text_field($_POST['pexels_key']));
+        }
 
         set_transient('amac_settings_saved', 'yes', 30);
 
@@ -170,6 +177,20 @@ class AI_Mass_Article_Creator {
         if (get_transient('amac_settings_saved')) {
             delete_transient('amac_settings_saved');
             echo '<div class="notice notice-success is-dismissible"><p>✅ Налаштування збережено!</p></div>';
+        }
+        
+        if (isset($_GET['test_result'])) {
+            $class = ($_GET['test_result'] === 'success') ? 'success' : 'error';
+            echo '<div class="notice notice-' . esc_attr($class) . ' is-dismissible"><p>' . esc_html(urldecode($_GET['test_message'])) . '</p></div>';
+        }
+        
+        if (isset($_GET['license_result'])) {
+            $class = ($_GET['license_result'] === 'success') ? 'success' : 'error';
+            echo '<div class="notice notice-' . esc_attr($class) . ' is-dismissible"><p>' . esc_html(urldecode($_GET['license_message'])) . '</p></div>';
+        }
+        
+        if (isset($_GET['generated'])) {
+            echo '<div class="notice notice-success is-dismissible"><p>✅ ' . intval($_GET['generated']) . ' статей створено!</p></div>';
         }
     }
 
@@ -233,6 +254,7 @@ class AI_Mass_Article_Creator {
     public function render_settings_page() {
         $api_key          = get_option('amac_api_key', '');
         $unsplash_key     = get_option('amac_unsplash_key', '');
+        $pexels_key       = get_option('amac_pexels_key', '');
         $default_category = get_option('amac_default_category', 0);
         $categories       = get_categories(array('hide_empty' => false));
         ?>
@@ -241,7 +263,7 @@ class AI_Mass_Article_Creator {
 
             <div class="amac-grid">
                 <div class="amac-card">
-                    <h3>🔑 Groq API</h3>
+                    <h3>🔑 Groq API (обов'язково)</h3>
                     <p>Отримайте безкоштовний ключ на <a href="https://console.groq.com/signup" target="_blank">console.groq.com</a></p>
                     <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=amac-settings')); ?>">
                         <?php wp_nonce_field('amac_save'); ?>
@@ -250,13 +272,21 @@ class AI_Mass_Article_Creator {
                             <label>Groq API Key:</label>
                             <input type="password" name="api_key" value="<?php echo esc_attr($api_key); ?>">
                         </div>
+                        
+                        <h3>🖼️ API для зображень (опціонально)</h3>
                         <div class="amac-form-group">
-                            <label>Unsplash Access Key <small>(для тематичних фото)</small>:</label>
+                            <label>Unsplash Access Key:</label>
                             <input type="password" name="unsplash_key" value="<?php echo esc_attr($unsplash_key); ?>">
-                            <small>Безкоштовно на <a href="https://unsplash.com/developers" target="_blank">unsplash.com/developers</a> → New Application</small>
+                            <small><a href="https://unsplash.com/developers" target="_blank">unsplash.com/developers</a></small>
                         </div>
                         <div class="amac-form-group">
-                            <label>Категорія за замовчуванням:</label>
+                            <label>Pexels API Key:</label>
+                            <input type="password" name="pexels_key" value="<?php echo esc_attr($pexels_key); ?>">
+                            <small><a href="https://www.pexels.com/api/" target="_blank">pexels.com/api/</a></small>
+                        </div>
+                        
+                        <h3>📁 Категорія за замовчуванням</h3>
+                        <div class="amac-form-group">
                             <select name="default_category">
                                 <option value="0">-- Оберіть категорію --</option>
                                 <?php foreach ($categories as $cat) : ?>
@@ -286,6 +316,16 @@ class AI_Mass_Article_Creator {
                     <p><a href="<?php echo esc_url($this->payhip_product_url); ?>" target="_blank">Купити ліцензію на Payhip →</a></p>
                 </div>
             </div>
+            
+            <div class="amac-card">
+                <h3>📖 Інструкція</h3>
+                <ol>
+                    <li>Отримайте <strong>Groq API ключ</strong> на <a href="https://console.groq.com/signup" target="_blank">console.groq.com</a> (обов'язково)</li>
+                    <li>Вставте ключ вище та натисніть "Зберегти"</li>
+                    <li><strong>Для кращих фото:</strong> отримайте безкоштовний API ключ на <a href="https://www.pexels.com/api/" target="_blank">Pexels</a> або <a href="https://unsplash.com/developers" target="_blank">Unsplash</a></li>
+                    <li>Перейдіть на головну сторінку плагіна та створюйте статті</li>
+                </ol>
+            </div>
         </div>
         <?php
     }
@@ -299,15 +339,6 @@ class AI_Mass_Article_Creator {
         $test_limit         = 10;
         $remaining_free     = max(0, $test_limit - $articles_generated);
         $can_generate       = $license_valid || $articles_generated < $test_limit;
-
-        if (isset($_GET['test_result'])) {
-            $class = ($_GET['test_result'] === 'success') ? 'success' : 'error';
-            echo '<div class="notice notice-' . esc_attr($class) . ' is-dismissible"><p>' . esc_html(urldecode($_GET['test_message'])) . '</p></div>';
-        }
-        if (isset($_GET['license_result'])) {
-            $class = ($_GET['license_result'] === 'success') ? 'success' : 'error';
-            echo '<div class="notice notice-' . esc_attr($class) . ' is-dismissible"><p>' . esc_html(urldecode($_GET['license_message'])) . '</p></div>';
-        }
         ?>
         <div class="wrap amac-container">
             <h1>🤖 AI Mass Article Creator</h1>
@@ -459,9 +490,9 @@ class AI_Mass_Article_Creator {
             $content = $this->get_article($title, $topic, $words, $api_key);
             if (is_wp_error($content)) continue;
             
-            // ВИПРАВЛЕННЯ 1: Видаляємо будь-які CSS стилі з початку контенту
+            // Видаляємо будь-які CSS стилі та markdown з початку контенту
             $content = preg_replace('/^\s*<style[^>]*>.*?<\/style>\s*/is', '', $content);
-            $content = preg_replace('/^\s*```(?:css)?\s*/i', '', $content);
+            $content = preg_replace('/^\s*```(?:css|html)?\s*/i', '', $content);
             $content = preg_replace('/```\s*$/i', '', $content);
             $content = trim($content);
 
@@ -555,7 +586,7 @@ class AI_Mass_Article_Creator {
 
         $comments = array_filter(array_map('trim', explode("\n", $res)));
         $count    = 0;
-        $names    = array('Олександр', 'Марія', 'Дмитро', 'Анна', 'Володимир', 'Оксана', 'Іван', 'Тетяна', 'Андрій', 'Наталія');
+        $names    = array('Олександр', 'Марія', 'Дмитро', 'Анна', 'Володимир', 'Оксана', 'Іван', 'Тетяна');
 
         foreach ($comments as $comment) {
             if (mb_strlen($comment) > 10) {
@@ -572,33 +603,36 @@ class AI_Mass_Article_Creator {
         return $count;
     }
 
-    // ВИПРАВЛЕННЯ 2: Покращений пошук тематичних фото через Unsplash
-    private function get_unsplash_image_url($keyword, $width = 1200, $height = 800) {
+    private function get_photo_url($keyword, $width = 1200, $height = 800) {
         $unsplash_key = get_option('amac_unsplash_key', '');
+        $pexels_key = get_option('amac_pexels_key', '');
         
-        // Очищуємо ключове слово
-        $keyword = trim($keyword);
-        if (empty($keyword)) {
-            $keyword = 'business';
+        $keyword_lower = strtolower($keyword);
+        $search_terms = $this->get_search_terms($keyword_lower);
+        
+        // Спроба 1: Pexels (краще для моди)
+        if (!empty($pexels_key)) {
+            $pexels_url = 'https://api.pexels.com/v1/search?query=' . urlencode($search_terms) . '&per_page=5&orientation=landscape';
+            $response = wp_remote_get($pexels_url, array(
+                'timeout' => 10,
+                'headers' => array('Authorization' => $pexels_key)
+            ));
+            
+            if (!is_wp_error($response) && isset($response['response']['code']) && $response['response']['code'] === 200) {
+                $data = json_decode(wp_remote_retrieve_body($response), true);
+                if (!empty($data['photos']) && is_array($data['photos'])) {
+                    $random_index = array_rand($data['photos']);
+                    $photo = $data['photos'][$random_index];
+                    return $photo['src']['large2x'] ?? $photo['src']['large'];
+                }
+            }
         }
-
-        // Якщо є Unsplash ключ – використовуємо для точного пошуку
+        
+        // Спроба 2: Unsplash (резерв)
         if (!empty($unsplash_key)) {
-            $api_url  = 'https://api.unsplash.com/photos/random?query=' . urlencode($keyword) . '&orientation=landscape&client_id=' . $unsplash_key;
+            $api_url = 'https://api.unsplash.com/photos/random?query=' . urlencode($search_terms) . '&orientation=landscape&client_id=' . $unsplash_key;
             $response = wp_remote_get($api_url, array('timeout' => 10));
             
-            if (!is_wp_error($response) && isset($response['response']['code']) && $response['response']['code'] === 200) {
-                $data = json_decode(wp_remote_retrieve_body($response), true);
-                if (!empty($data['urls']['regular'])) {
-                    return $data['urls']['regular'];
-                }
-            }
-            
-            // Якщо не знайшло за точним запитом – пробуємо з більш загальним
-            $fallback_keywords = array('technology', 'business', 'office', 'work', 'computer', 'internet', 'marketing');
-            $fallback_keyword = $fallback_keywords[array_rand($fallback_keywords)];
-            $api_url = 'https://api.unsplash.com/photos/random?query=' . urlencode($fallback_keyword) . '&orientation=landscape&client_id=' . $unsplash_key;
-            $response = wp_remote_get($api_url, array('timeout' => 10));
             if (!is_wp_error($response) && isset($response['response']['code']) && $response['response']['code'] === 200) {
                 $data = json_decode(wp_remote_retrieve_body($response), true);
                 if (!empty($data['urls']['regular'])) {
@@ -606,24 +640,60 @@ class AI_Mass_Article_Creator {
                 }
             }
         }
+        
+        // Спроба 3: Прямі якісні фото
+        $fallback_images = array(
+            'https://images.pexels.com/photos/7679720/pexels-photo-7679720.jpeg?w=1200&h=800',
+            'https://images.pexels.com/photos/7679724/pexels-photo-7679724.jpeg?w=1200&h=800',
+            'https://images.pexels.com/photos/3998410/pexels-photo-3998410.jpeg?w=1200&h=800',
+            'https://images.pexels.com/photos/934067/pexels-photo-934067.jpeg?w=1200&h=800',
+            'https://images.pexels.com/photos/297933/pexels-photo-297933.jpeg?w=1200&h=800',
+            'https://images.pexels.com/photos/1284065/pexels-photo-1284065.jpeg?w=1200&h=800',
+        );
+        
+        $random_index = array_rand($fallback_images);
+        return $fallback_images[$random_index];
+    }
 
-        // Fallback: picsum з випадковою тематикою (але краще ніж нічого)
-        return 'https://picsum.photos/' . $width . '/' . $height . '?random=' . mt_rand(1, 9999);
+    private function get_search_terms($keyword) {
+        $maps = array(
+            'білизн' => 'lingerie fashion model elegant',
+            'одеж' => 'fashion clothing style woman',
+            'мод' => 'fashion style clothing model',
+            'жінк' => 'woman female portrait beauty',
+            'заробіток' => 'business money work office',
+            'бізнес' => 'business office work meeting',
+            'комп' => 'computer laptop technology office',
+            'сайт' => 'website design coding computer',
+            'програм' => 'coding developer programmer',
+            'здоров' => 'health fitness sport wellness',
+            'їж' => 'food cooking kitchen meal',
+            'подорож' => 'travel beach vacation nature',
+            'навчан' => 'education study school book',
+            'будинок' => 'home interior house room',
+        );
+        
+        foreach ($maps as $key => $query) {
+            if (strpos($keyword, $key) !== false) {
+                return $query;
+            }
+        }
+        
+        return 'business office work technology';
     }
 
     private function add_featured_image($post_id, $title, $topic = '') {
         require_once ABSPATH . 'wp-admin/includes/media.php';
         require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/image.php';
-
-        // Використовуємо тему як пріоритетне ключове слово для фото
+        
         $keyword = !empty($topic) ? $topic : $title;
-        $image_url = $this->get_unsplash_image_url($keyword, 1200, 800);
-
+        $image_url = $this->get_photo_url($keyword, 1200, 800);
+        
         $tmp = download_url($image_url, 15);
         if (!is_wp_error($tmp)) {
             $file = array('name' => sanitize_title($title) . '-' . time() . '.jpg', 'tmp_name' => $tmp);
-            $aid  = media_handle_sideload($file, $post_id);
+            $aid = media_handle_sideload($file, $post_id);
             if (!is_wp_error($aid)) {
                 set_post_thumbnail($post_id, $aid);
                 update_post_meta($aid, '_wp_attachment_image_alt', $title);
@@ -636,11 +706,11 @@ class AI_Mass_Article_Creator {
     }
 
     private function add_inline_images($post_id, $title, $topic = '') {
-        $content    = get_post_field('post_content', $post_id);
+        $content = get_post_field('post_content', $post_id);
         $paragraphs = explode('</p>', $content);
         if (count($paragraphs) < 3) return;
-
-        $img_count = rand(2, 3);
+        
+        $img_count = rand(1, 2);
         $positions = array();
         for ($i = 1; $i <= $img_count; $i++) {
             $pos = round((count($paragraphs) / ($img_count + 1)) * $i);
@@ -649,15 +719,14 @@ class AI_Mass_Article_Creator {
             }
         }
         $positions = array_reverse($positions);
-
-        // Використовуємо тему для inline фото
+        
         $keyword = !empty($topic) ? $topic : $title;
-
+        
         foreach ($positions as $pos) {
-            $img_url = $this->get_unsplash_image_url($keyword, 800, 500);
+            $img_url = $this->get_photo_url($keyword, 800, 500);
             $paragraphs[$pos - 1] .= '</p><figure style="margin:20px 0;"><img src="' . esc_url($img_url) . '" alt="' . esc_attr($title) . '" style="width:100%;border-radius:8px;" loading="lazy"><figcaption style="text-align:center;color:#666;font-size:14px;">' . esc_html($title) . '</figcaption></figure>';
         }
-
+        
         wp_update_post(array('ID' => $post_id, 'post_content' => implode('', $paragraphs)));
     }
 
