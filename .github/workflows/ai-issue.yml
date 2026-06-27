@@ -25,4 +25,4 @@ jobs:
           echo "Issue: ${{ github.event.issue.number }}"
 
       - name: Done
-        run: echo "Workflow is installed successfully."
+        run: echo "Workflow is installed successfully." 
