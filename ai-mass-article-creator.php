@@ -1,826 +1,225 @@
 <?php
 /**
  * Plugin Name: AI Mass Article Creator
- * Plugin URI: https://github.com/portallcomua/ai-mass-article-creator
- * Description: Generate 1-20 unique SEO articles with AI, automatic images, and 3-5 REAL user comments per article
- * Version: 2.3.2
+ * Plugin URI: https://github.com/portallcomua/Ai-mass-article-creator
+ * Description: AI SEO article generator with thematic images, SEO metadata, FAQ Schema, internal linking, and WooCommerce licensing readiness.
+ * Version: 3.0.0
  * Author: UAServer
  * Author URI: https://uaserver.pp.ua
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
- * GitHub Plugin URI: portallcomua/ai-mass-article-creator
  * Requires PHP: 7.4
  * Requires at least: 5.8
  * Tested up to: 6.5
- * Text Domain: amac
+ * Text Domain: ai-mass-article-creator
  * Domain Path: /languages
+ * GitHub Plugin URI: portallcomua/Ai-mass-article-creator
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('AMAC_VERSION', '2.3.2');
+define('AMAC_VERSION', '3.0.0');
+define('AMAC_PLUGIN_FILE', __FILE__);
+define('AMAC_PLUGIN_BASENAME', plugin_basename(__FILE__));
 
-class AI_Mass_Article_Creator {
-
-    private $payhip_product_url = 'https://payhip.com/b/bw9ly';
+final class AI_Mass_Article_Creator_3 {
+    private $repo = 'portallcomua/Ai-mass-article-creator';
+    private $free_limit = 20;
+    private $product_url = 'https://uaserver.pp.ua/';
 
     public function __construct() {
-        add_action('admin_menu', array($this, 'add_admin_menu'));
-        add_action('admin_init', array($this, 'handle_settings_save'));
-        add_action('admin_post_amac_test_api', array($this, 'test_api_connection'));
-        add_action('admin_post_amac_license_verify', array($this, 'verify_license'));
-        add_action('wp_ajax_amac_generate', array($this, 'generate_posts_ajax'));
-        add_action('admin_enqueue_scripts', array($this, 'enqueue_scripts'));
-        add_action('admin_notices', array($this, 'show_admin_notices'));
-
-        // GitHub автооновлення
+        add_action('admin_menu', array($this, 'admin_menu'));
+        add_action('admin_init', array($this, 'save_settings'));
+        add_action('admin_enqueue_scripts', array($this, 'admin_assets'));
+        add_action('wp_ajax_amac_generate', array($this, 'ajax_generate'));
+        add_action('wp_ajax_amac_test_provider', array($this, 'ajax_test_provider'));
+        add_action('admin_notices', array($this, 'notices'));
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_github_updates'));
         add_filter('plugins_api', array($this, 'github_plugin_info'), 10, 3);
+        add_action('wp_head', array($this, 'print_schema_for_single'), 20);
     }
 
-    public function enqueue_scripts($hook) {
-        if ($hook !== 'toplevel_page_ai-mass-article-creator' && $hook !== 'ai-mass-article_page_amac-settings') return;
+    private function defaults() {
+        return array(
+            'ai_provider' => get_option('amac_ai_provider', 'groq'),
+            'groq_key' => get_option('amac_api_key', ''),
+            'openai_key' => get_option('amac_openai_key', ''),
+            'pexels_key' => get_option('amac_pexels_key', ''),
+            'pixabay_key' => get_option('amac_pixabay_key', ''),
+            'unsplash_key' => get_option('amac_unsplash_key', ''),
+            'default_category' => (int) get_option('amac_default_category', 0),
+            'license_key' => get_option('amac_license_key', ''),
+            'license_valid' => (bool) get_option('amac_license_valid', false),
+            'dev_mode' => (bool) get_option('amac_dev_mode', false),
+            'product_url' => get_option('amac_product_url', $this->product_url),
+            'language' => get_option('amac_language', 'uk'),
+        );
+    }
 
-        wp_add_inline_style('admin-bar', $this->get_admin_css());
-        wp_add_inline_script('jquery', $this->get_admin_js());
-        wp_localize_script('jquery', 'amac_ajax', array(
+    public function admin_assets($hook) {
+        if (strpos($hook, 'ai-mass-article-creator') === false && strpos($hook, 'amac-settings') === false) return;
+        wp_add_inline_style('admin-bar', $this->css());
+        wp_add_inline_script('jquery', $this->js());
+        wp_localize_script('jquery', 'AMAC3', array(
             'ajax_url' => admin_url('admin-ajax.php'),
-            'nonce'    => wp_create_nonce('amac_ajax'),
+            'nonce' => wp_create_nonce('amac3_nonce'),
         ));
     }
 
-    private function get_admin_css() {
-        return '
-        .amac-container { max-width: 1400px; margin: 20px 0; }
-        .amac-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-bottom: 20px; }
-        .amac-card { background: #fff; border: 1px solid #ccd0d4; border-radius: 12px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .amac-balance { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-        .amac-balance .balance-amount { font-size: 42px; font-weight: bold; margin: 15px 0; }
-        .amac-progress { background: #f0f0f0; border-radius: 8px; overflow: hidden; margin: 15px 0; display: none; }
-        .amac-progress-bar { background: #46b450; color: white; padding: 8px; text-align: center; width: 0%; transition: width 0.3s; }
-        .amac-log { background: #1e1e1e; color: #ddd; padding: 15px; border-radius: 8px; font-family: monospace; max-height: 400px; overflow-y: auto; font-size: 12px; margin-top: 15px; display: none; }
-        .amac-results-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        .amac-results-table th, .amac-results-table td { padding: 10px; text-align: left; border-bottom: 1px solid #333; }
-        .amac-results-table th { color: #46b450; }
-        .amac-badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; background: #d4edda; color: #155724; }
-        .amac-form-group { margin-bottom: 15px; }
-        .amac-form-group label { display: block; margin-bottom: 5px; font-weight: 500; }
-        .amac-form-group input, .amac-form-group select { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; }
-        ';
+    private function css() {
+        return '.amac-wrap{max-width:1320px}.amac-hero{background:linear-gradient(135deg,#111827,#2563eb);color:#fff;border-radius:18px;padding:26px;margin:20px 0}.amac-hero h1{color:#fff;margin:0;font-size:32px}.amac-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}.amac-card{background:#fff;border:1px solid #dcdcde;border-radius:16px;padding:20px;box-shadow:0 2px 10px rgba(0,0,0,.04)}.amac-card h2,.amac-card h3{margin-top:0}.amac-field{margin:0 0 14px}.amac-field label{display:block;font-weight:600;margin-bottom:6px}.amac-field input,.amac-field select,.amac-field textarea{width:100%;max-width:100%;border-radius:8px;border:1px solid #c3c4c7;padding:8px 10px}.amac-muted{color:#646970;font-size:12px}.amac-badge{display:inline-block;background:#e7f5ff;color:#075985;border-radius:99px;padding:4px 10px;font-size:12px;font-weight:600}.amac-ok{color:#008a20}.amac-bad{color:#d63638}.amac-progress{display:none;background:#f0f0f1;border-radius:99px;overflow:hidden;margin:16px 0}.amac-progress span{display:block;background:#22c55e;color:#fff;text-align:center;padding:7px;width:0}.amac-log{display:none;background:#111827;color:#d1d5db;border-radius:14px;padding:14px;max-height:420px;overflow:auto;font-family:monospace;font-size:12px}.amac-table{width:100%;border-collapse:collapse}.amac-table td,.amac-table th{padding:9px;border-bottom:1px solid #374151;text-align:left}.amac-help{background:#f8fafc;border-left:4px solid #2563eb;padding:10px;border-radius:6px}.amac-tabs a{margin-right:10px}.amac-checkboxes label{display:block;margin:5px 0}.amac-small-btn{font-size:12px}.amac-two{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:782px){.amac-two{grid-template-columns:1fr}}';
     }
 
-    private function get_admin_js() {
-        return '
-        jQuery(document).ready(function($) {
-            $("#amac-generate-form").on("submit", function(e) {
-                e.preventDefault();
-
-                var topic = $("#amac_topic").val();
-                if (!topic) { alert("Введіть тему!"); return false; }
-
-                $("#amac-progress").show();
-                $("#amac-log").html("").show();
-                $("#amac-generate-btn").prop("disabled", true);
-                $("#amac-progress-bar").css("width", "10%").text("Генерація...");
-
-                var formData = new FormData(this);
-                formData.append("action", "amac_generate");
-                formData.append("nonce", amac_ajax.nonce);
-
-                $.ajax({
-                    url: amac_ajax.ajax_url,
-                    type: "POST",
-                    data: formData,
-                    processData: false,
-                    contentType: false,
-                    success: function(response) {
-                        if (response.success) {
-                            $("#amac-log").append("<div style=\"color:#46b450;padding:5px;\">✅ " + response.data.message + "</div>");
-                            if (response.data.results && response.data.results.length) {
-                                var html = "<table class=\"amac-results-table\"><thead><tr><th>#</th><th>Заголовок</th><th>Коментарі</th><th>Фото</th><th>Дія</th></tr></thead><tbody>";
-                                $.each(response.data.results, function(i, post) {
-                                    html += "<tr>";
-                                    html += "<td>" + (i+1) + "</td>";
-                                    html += "<td><strong>" + post.title + "</strong></td>";
-                                    html += "<td><span class=\"amac-badge\">" + post.comments_count + " комент.</span></td>";
-                                    html += "<td>" + (post.image ? "✅" : "❌") + "</td>";
-                                    html += "<td><a href=\"" + post.quetext_url + "\" target=\"_blank\" class=\"button button-small\">🔍 Перевірити</a></td>";
-                                    html += "</tr>";
-                                });
-                                html += "</tbody></table>";
-                                $("#amac-log").append(html);
-                            }
-                        } else {
-                            $("#amac-log").append("<div style=\"color:#dc3232;padding:5px;\">❌ " + response.data.message + "</div>");
-                        }
-                        $("#amac-generate-btn").prop("disabled", false);
-                        $("#amac-progress-bar").css("width", "100%").text("100%");
-                    },
-                    error: function(xhr, status, error) {
-                        $("#amac-log").append("<div style=\"color:#dc3232;padding:5px;\">❌ Помилка: " + error + "</div>");
-                        $("#amac-generate-btn").prop("disabled", false);
-                        $("#amac-progress-bar").css("width", "0%").text("0%");
-                    }
-                });
-                return false;
-            });
-        });
-        ';
+    private function js() {
+        return 'jQuery(function($){$("#amac-generate-form").on("submit",function(e){e.preventDefault();$("#amac-log").html("").show();$("#amac-progress").show().find("span").css("width","12%").text("Старт...");$("#amac-generate-btn").prop("disabled",true);var fd=new FormData(this);fd.append("action","amac_generate");fd.append("nonce",AMAC3.nonce);$.ajax({url:AMAC3.ajax_url,type:"POST",data:fd,contentType:false,processData:false,success:function(r){if(r.success){$("#amac-progress span").css("width","100%").text("Готово");$("#amac-log").append("<div style=\\"color:#86efac\\">✅ "+r.data.message+"</div>");if(r.data.results){var h="<table class=\\"amac-table\\"><tr><th>#</th><th>Стаття</th><th>SEO</th><th>Фото</th><th>Дія</th></tr>";$.each(r.data.results,function(i,p){h+="<tr><td>"+(i+1)+"</td><td>"+p.title+"</td><td>"+p.score+"/100</td><td>"+(p.image?"✅":"❌")+"</td><td><a target=\\"_blank\\" href=\\""+p.edit_url+"\\">Редагувати</a></td></tr>"});h+="</table>";$("#amac-log").append(h)}}else{$("#amac-progress span").css("width","100%").text("Помилка");$("#amac-log").append("<div style=\\"color:#fca5a5\\">❌ "+(r.data&&r.data.message?r.data.message:"Помилка")+"</div>")}$("#amac-generate-btn").prop("disabled",false)},error:function(x){$("#amac-log").append("<div style=\\"color:#fca5a5\\">❌ AJAX error</div>");$("#amac-generate-btn").prop("disabled",false)}})});$(".amac-test-provider").on("click",function(e){e.preventDefault();var p=$(this).data("provider"),el=$(this);el.text("...");$.post(AMAC3.ajax_url,{action:"amac_test_provider",provider:p,nonce:AMAC3.nonce},function(r){el.text(r.success?"✅ OK":"❌ Error");alert(r.data.message)})})});';
     }
 
-    public function add_admin_menu() {
-        add_menu_page(
-            'AI Mass Article Creator',
-            'AI Mass Article',
-            'manage_options',
-            'ai-mass-article-creator',
-            array($this, 'render_admin_page'),
-            'dashicons-welcome-write-blog',
-            20
-        );
-
-        add_submenu_page(
-            'ai-mass-article-creator',
-            'Settings',
-            'Settings',
-            'manage_options',
-            'amac-settings',
-            array($this, 'render_settings_page')
-        );
+    public function admin_menu() {
+        add_menu_page('AI Mass Article Creator', 'AI Mass Article', 'manage_options', 'ai-mass-article-creator', array($this, 'page_dashboard'), 'dashicons-welcome-write-blog', 20);
+        add_submenu_page('ai-mass-article-creator', 'Generate', 'Generate', 'manage_options', 'ai-mass-article-creator', array($this, 'page_dashboard'));
+        add_submenu_page('ai-mass-article-creator', 'Settings', 'Settings', 'manage_options', 'amac-settings', array($this, 'page_settings'));
+        add_submenu_page('ai-mass-article-creator', 'License', 'License', 'manage_options', 'amac-license', array($this, 'page_license'));
     }
 
-    public function handle_settings_save() {
-        if (!isset($_POST['amac_save_settings']) || !check_admin_referer('amac_save')) {
-            return;
-        }
-
-        if (isset($_POST['api_key'])) {
-            update_option('amac_api_key', sanitize_text_field($_POST['api_key']));
-        }
-        if (isset($_POST['default_category'])) {
-            update_option('amac_default_category', intval($_POST['default_category']));
-        }
-        if (isset($_POST['unsplash_key'])) {
-            update_option('amac_unsplash_key', sanitize_text_field($_POST['unsplash_key']));
-        }
-        if (isset($_POST['pexels_key'])) {
-            update_option('amac_pexels_key', sanitize_text_field($_POST['pexels_key']));
-        }
-
-        set_transient('amac_settings_saved', 'yes', 30);
-
-        wp_redirect(admin_url('admin.php?page=amac-settings'));
+    public function save_settings() {
+        if (!isset($_POST['amac_save_settings']) || !check_admin_referer('amac_save_settings')) return;
+        $fields = array('amac_ai_provider','amac_api_key','amac_openai_key','amac_pexels_key','amac_pixabay_key','amac_unsplash_key','amac_product_url','amac_language');
+        foreach ($fields as $field) if (isset($_POST[$field])) update_option($field, sanitize_text_field(wp_unslash($_POST[$field])));
+        update_option('amac_default_category', isset($_POST['amac_default_category']) ? (int) $_POST['amac_default_category'] : 0);
+        update_option('amac_dev_mode', !empty($_POST['amac_dev_mode']) ? 1 : 0);
+        set_transient('amac_saved', 1, 30);
+        wp_safe_redirect(admin_url('admin.php?page=amac-settings'));
         exit;
     }
 
-    public function show_admin_notices() {
-        if (get_transient('amac_settings_saved')) {
-            delete_transient('amac_settings_saved');
-            echo '<div class="notice notice-success is-dismissible"><p>✅ Налаштування збережено!</p></div>';
-        }
-        
-        if (isset($_GET['test_result'])) {
-            $class = ($_GET['test_result'] === 'success') ? 'success' : 'error';
-            echo '<div class="notice notice-' . esc_attr($class) . ' is-dismissible"><p>' . esc_html(urldecode($_GET['test_message'])) . '</p></div>';
-        }
-        
-        if (isset($_GET['license_result'])) {
-            $class = ($_GET['license_result'] === 'success') ? 'success' : 'error';
-            echo '<div class="notice notice-' . esc_attr($class) . ' is-dismissible"><p>' . esc_html(urldecode($_GET['license_message'])) . '</p></div>';
-        }
-        
-        if (isset($_GET['generated'])) {
-            echo '<div class="notice notice-success is-dismissible"><p>✅ ' . intval($_GET['generated']) . ' статей створено!</p></div>';
-        }
+    public function notices() {
+        if (get_transient('amac_saved')) { delete_transient('amac_saved'); echo '<div class="notice notice-success is-dismissible"><p>✅ AI Mass Article Creator: налаштування збережено.</p></div>'; }
     }
 
-    public function test_api_connection() {
-        if (!isset($_GET['_wpnonce']) || !wp_verify_nonce($_GET['_wpnonce'], 'amac_test')) {
-            wp_die('Security check failed');
-        }
-
-        $api_key = get_option('amac_api_key', '');
-        if (empty($api_key)) {
-            wp_redirect(admin_url('admin.php?page=ai-mass-article-creator&test_result=error&test_message=' . urlencode('API key is empty')));
-            exit;
-        }
-
-        $response = wp_remote_post('https://api.groq.com/openai/v1/chat/completions', array(
-            'timeout' => 15,
-            'headers' => array(
-                'Content-Type'  => 'application/json',
-                'Authorization' => 'Bearer ' . $api_key,
-            ),
-            'body' => json_encode(array(
-                'model'      => 'llama-3.1-8b-instant',
-                'messages'   => array(array('role' => 'user', 'content' => 'OK')),
-                'max_tokens' => 5,
-            )),
-        ));
-
-        if (is_wp_error($response)) {
-            wp_redirect(admin_url('admin.php?page=ai-mass-article-creator&test_result=error&test_message=' . urlencode($response->get_error_message())));
-            exit;
-        }
-
-        $body = json_decode(wp_remote_retrieve_body($response), true);
-        if (isset($body['error'])) {
-            wp_redirect(admin_url('admin.php?page=ai-mass-article-creator&test_result=error&test_message=' . urlencode($body['error']['message'])));
-            exit;
-        }
-
-        wp_redirect(admin_url('admin.php?page=ai-mass-article-creator&test_result=success&test_message=' . urlencode('✅ API key is valid!')));
-        exit;
+    private function header_html($title='AI Mass Article Creator') {
+        $s = $this->defaults();
+        echo '<div class="wrap amac-wrap"><div class="amac-hero"><h1>'.esc_html($title).'</h1><p>Version '.esc_html(AMAC_VERSION).' — AI Content Studio Engine</p><span class="amac-badge">Free: '.$this->free_limit.' articles</span> <span class="amac-badge">SEO + FAQ Schema</span> <span class="amac-badge">Pexels/Pixabay/Unsplash/Openverse</span></div>';
     }
 
-    public function verify_license() {
-        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], 'amac_license')) {
-            wp_die('Security check failed');
-        }
-
-        $license_key = sanitize_text_field($_POST['license_key']);
-
-        if (!empty($license_key) && strlen($license_key) > 5) {
-            update_option('amac_license_valid', true);
-            update_option('amac_license_key', $license_key);
-            wp_redirect(admin_url('admin.php?page=ai-mass-article-creator&license_result=success&license_message=' . urlencode('✅ License activated!')));
-            exit;
-        }
-
-        wp_redirect(admin_url('admin.php?page=ai-mass-article-creator&license_result=error&license_message=' . urlencode('❌ Invalid license key')));
-        exit;
-    }
-
-    public function render_settings_page() {
-        $api_key          = get_option('amac_api_key', '');
-        $unsplash_key     = get_option('amac_unsplash_key', '');
-        $pexels_key       = get_option('amac_pexels_key', '');
-        $default_category = get_option('amac_default_category', 0);
-        $categories       = get_categories(array('hide_empty' => false));
-        ?>
-        <div class="wrap amac-container">
-            <h1>AI Mass Article Creator — Налаштування</h1>
-
-            <div class="amac-grid">
-                <div class="amac-card">
-                    <h3>🔑 Groq API (обов'язково)</h3>
-                    <p>Отримайте безкоштовний ключ на <a href="https://console.groq.com/signup" target="_blank">console.groq.com</a></p>
-                    <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=amac-settings')); ?>">
-                        <?php wp_nonce_field('amac_save'); ?>
-                        <input type="hidden" name="amac_save_settings" value="1">
-                        <div class="amac-form-group">
-                            <label>Groq API Key:</label>
-                            <input type="password" name="api_key" value="<?php echo esc_attr($api_key); ?>">
-                        </div>
-                        
-                        <h3>🖼️ API для зображень (опціонально)</h3>
-                        <div class="amac-form-group">
-                            <label>Unsplash Access Key:</label>
-                            <input type="password" name="unsplash_key" value="<?php echo esc_attr($unsplash_key); ?>">
-                            <small><a href="https://unsplash.com/developers" target="_blank">unsplash.com/developers</a></small>
-                        </div>
-                        <div class="amac-form-group">
-                            <label>Pexels API Key:</label>
-                            <input type="password" name="pexels_key" value="<?php echo esc_attr($pexels_key); ?>">
-                            <small><a href="https://www.pexels.com/api/" target="_blank">pexels.com/api/</a></small>
-                        </div>
-                        
-                        <h3>📁 Категорія за замовчуванням</h3>
-                        <div class="amac-form-group">
-                            <select name="default_category">
-                                <option value="0">-- Оберіть категорію --</option>
-                                <?php foreach ($categories as $cat) : ?>
-                                    <option value="<?php echo esc_attr($cat->term_id); ?>" <?php selected($default_category, $cat->term_id); ?>>
-                                        <?php echo esc_html($cat->name); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <button type="submit" class="button button-primary">Зберегти налаштування</button>
-                    </form>
-                </div>
-
-                <div class="amac-card">
-                    <h3>💰 Ліцензія</h3>
-                    <p><strong>Ціна:</strong> $47 (довічна ліцензія)</p>
-                    <p><strong>Безкоштовно:</strong> 10 статей для тесту</p>
-                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                        <?php wp_nonce_field('amac_license'); ?>
-                        <input type="hidden" name="action" value="amac_license_verify">
-                        <div class="amac-form-group">
-                            <label>Ключ ліцензії:</label>
-                            <input type="text" name="license_key" placeholder="Введіть ваш ключ">
-                        </div>
-                        <button type="submit" class="button button-primary">Активувати ліцензію</button>
-                    </form>
-                    <p><a href="<?php echo esc_url($this->payhip_product_url); ?>" target="_blank">Купити ліцензію на Payhip →</a></p>
-                </div>
-            </div>
-            
-            <div class="amac-card">
-                <h3>📖 Інструкція</h3>
-                <ol>
-                    <li>Отримайте <strong>Groq API ключ</strong> на <a href="https://console.groq.com/signup" target="_blank">console.groq.com</a> (обов'язково)</li>
-                    <li>Вставте ключ вище та натисніть "Зберегти"</li>
-                    <li><strong>Для кращих фото:</strong> отримайте безкоштовний API ключ на <a href="https://www.pexels.com/api/" target="_blank">Pexels</a> або <a href="https://unsplash.com/developers" target="_blank">Unsplash</a></li>
-                    <li>Перейдіть на головну сторінку плагіна та створюйте статті</li>
-                </ol>
-            </div>
+    public function page_dashboard() {
+        $s = $this->defaults(); $generated = (int) get_option('amac_total_generated', 0);
+        $remaining = $s['license_valid'] || $s['dev_mode'] ? '∞' : max(0, $this->free_limit - $generated);
+        $cats = get_categories(array('hide_empty'=>false));
+        $this->header_html('AI Mass Article Creator 3.0'); ?>
+        <div class="amac-grid">
+            <div class="amac-card"><h3>Статус</h3><p><strong>Згенеровано:</strong> <?php echo intval($generated); ?></p><p><strong>Залишилось:</strong> <?php echo esc_html($remaining); ?></p><p><strong>AI:</strong> <?php echo esc_html(strtoupper($s['ai_provider'])); ?></p><p><strong>Ліцензія:</strong> <?php echo $s['license_valid'] ? '<span class="amac-ok">активна</span>' : '<span class="amac-bad">free/test</span>'; ?></p></div>
+            <div class="amac-card"><h3>Швидкий старт</h3><ol><li>Введи Groq або OpenAI key у Settings.</li><li>Для якісних фото додай Pexels/Pixabay/Unsplash.</li><li>Згенеруй 1 статтю в чернетку.</li></ol><p><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=amac-settings')); ?>">Налаштування</a></p></div>
         </div>
-        <?php
-    }
-
-    public function render_admin_page() {
-        $categories         = get_categories(array('hide_empty' => false));
-        $api_key            = get_option('amac_api_key', '');
-        $license_valid      = get_option('amac_license_valid', false);
-        $articles_generated = intval(get_option('amac_total_generated', 0));
-        $default_category   = get_option('amac_default_category', 0);
-        $test_limit         = 10;
-        $remaining_free     = max(0, $test_limit - $articles_generated);
-        $can_generate       = $license_valid || $articles_generated < $test_limit;
-        ?>
-        <div class="wrap amac-container">
-            <h1>🤖 AI Mass Article Creator</h1>
-
-            <div class="amac-grid">
-                <div class="amac-card amac-balance">
-                    <h3>📊 Ваш статус</h3>
-                    <div class="balance-amount"><?php echo intval($articles_generated); ?> / <?php echo esc_html($test_limit); ?></div>
-                    <p>Статей згенеровано (безкоштовний рівень)</p>
-                    <?php if (!$license_valid && $remaining_free > 0) : ?>
-                        <p>✅ <strong>Залишилось безкоштовних: <?php echo intval($remaining_free); ?></strong></p>
-                    <?php elseif (!$license_valid && $remaining_free === 0) : ?>
-                        <p>⚠️ <strong>Безкоштовний ліміт вичерпано! Придбайте ліцензію.</strong></p>
-                    <?php else : ?>
-                        <p>🎉 <strong>Ліцензія активна! Необмежена кількість статей.</strong></p>
-                    <?php endif; ?>
+        <div class="amac-card" style="margin-top:18px"><h2>Генерація статей</h2>
+            <form id="amac-generate-form">
+                <div class="amac-field"><label>Тема / ключове слово</label><input name="topic" required placeholder="Напр. жіноча білизна, сімейний бюджет, WordPress SEO"></div>
+                <div class="amac-two">
+                    <div class="amac-field"><label>Кількість</label><select name="count"><?php for($i=1;$i<=20;$i++) echo '<option value="'.esc_attr($i).'" '.selected($i,1,false).'>'.esc_html($i).'</option>'; ?></select></div>
+                    <div class="amac-field"><label>Довжина</label><select name="words"><option value="600">600 слів</option><option value="900" selected>900 слів</option><option value="1300">1300 слів</option></select></div>
                 </div>
-
-                <div class="amac-card">
-                    <h3>⚡ Швидкий старт</h3>
-                    <ol>
-                        <li>Отримайте <a href="https://console.groq.com/signup" target="_blank">безкоштовний Groq API ключ</a></li>
-                        <li>Вставте ключ у <strong>Налаштування</strong> → Зберегти</li>
-                        <li>Протестуйте ключ кнопкою нижче</li>
-                        <li>Введіть тему → Натисніть Генерувати</li>
-                    </ol>
-                    <p>
-                        <a href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=amac_test_api'), 'amac_test')); ?>" class="button">✅ Протестувати API ключ</a>
-                    </p>
-                    <?php if (empty($api_key)) : ?>
-                        <p style="color:red;">❌ API ключ не налаштовано!</p>
-                    <?php else : ?>
-                        <p style="color:green;">✅ API ключ налаштовано</p>
-                    <?php endif; ?>
+                <div class="amac-two">
+                    <div class="amac-field"><label>Категорія</label><select name="category"><option value="0">AI створить/обере</option><?php foreach($cats as $c) echo '<option value="'.esc_attr($c->term_id).'">'.esc_html($c->name).'</option>'; ?></select></div>
+                    <div class="amac-field"><label>Статус</label><select name="status"><option value="draft">Чернетка</option><option value="publish">Опублікувати</option></select></div>
                 </div>
-            </div>
-
-            <?php if (!$can_generate) : ?>
-                <div class="amac-card" style="background:#fff3cd; border-color:#ffeeba; margin-bottom:20px;">
-                    <h3>⚠️ Безкоштовний ліміт вичерпано</h3>
-                    <p>Ви використали всі <strong><?php echo esc_html($test_limit); ?></strong> безкоштовних статей.</p>
-                    <p>Придбайте ліцензію щоб продовжити генерацію без обмежень.</p>
-                    <a href="<?php echo esc_url($this->payhip_product_url); ?>" target="_blank" class="button button-primary">💰 Купити ліцензію ($47)</a>
-                </div>
-            <?php else : ?>
-                <div class="amac-card">
-                    <h3>📝 Генерація статей</h3>
-
-                    <form id="amac-generate-form" method="post">
-                        <div class="amac-form-group">
-                            <label>Тема / Ключове слово:</label>
-                            <input type="text" name="main_topic" id="amac_topic" required placeholder="напр. заробіток в інтернеті, веб-дизайн, SEO">
-                        </div>
-
-                        <div class="amac-grid" style="grid-template-columns: repeat(3, 1fr);">
-                            <div class="amac-form-group">
-                                <label>Кількість статей:</label>
-                                <select name="post_count">
-                                    <?php for ($i = 1; $i <= 20; $i++) : ?>
-                                        <option value="<?php echo esc_attr($i); ?>" <?php echo ($i === 3) ? 'selected' : ''; ?>>
-                                            <?php echo esc_html($i); ?>
-                                        </option>
-                                    <?php endfor; ?>
-                                </select>
-                            </div>
-
-                            <div class="amac-form-group">
-                                <label>Категорія:</label>
-                                <select name="category_id">
-                                    <?php foreach ($categories as $cat) : ?>
-                                        <option value="<?php echo esc_attr($cat->term_id); ?>" <?php selected($default_category, $cat->term_id); ?>>
-                                            <?php echo esc_html($cat->name); ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-
-                            <div class="amac-form-group">
-                                <label>Довжина статті:</label>
-                                <select name="length">
-                                    <option value="400">Коротка (~400 слів)</option>
-                                    <option value="700" selected>Середня (~700 слів)</option>
-                                    <option value="1000">Довга (~1000 слів)</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div style="margin: 15px 0;">
-                            <label><strong>Функції:</strong></label><br>
-                            <label><input type="checkbox" name="add_images" value="1" checked> Додати головне зображення</label><br>
-                            <label><input type="checkbox" name="add_inline_images" value="1" checked> Додати 2-3 зображення в тексті</label><br>
-                            <label><input type="checkbox" name="add_tags" value="1" checked> Додати теги</label><br>
-                            <label><input type="checkbox" name="add_seo" value="1" checked> Додати SEO мета-поля</label><br>
-                            <label><input type="checkbox" name="add_comments" value="1" checked> Додати 3-5 унікальних коментарів</label>
-                        </div>
-
-                        <div id="amac-progress" class="amac-progress">
-                            <div id="amac-progress-bar" class="amac-progress-bar">0%</div>
-                        </div>
-                        <div id="amac-log" class="amac-log"></div>
-
-                        <button type="submit" id="amac-generate-btn" class="button button-primary button-large">🚀 Генерувати статті</button>
-                    </form>
-                </div>
-            <?php endif; ?>
-        </div>
-        <?php
+                <div class="amac-checkboxes"><strong>Функції</strong><label><input type="checkbox" name="featured" checked> Головне фото</label><label><input type="checkbox" name="inline" checked> 2–3 фото в статті</label><label><input type="checkbox" name="seo" checked> SEO Rank Math / Yoast</label><label><input type="checkbox" name="faq" checked> FAQ + JSON-LD Schema</label><label><input type="checkbox" name="links" checked> Внутрішня перелінковка</label><label><input type="checkbox" name="comments"> Реалістичні коментарі</label></div>
+                <div id="amac-progress" class="amac-progress"><span>0%</span></div><div id="amac-log" class="amac-log"></div><p><button id="amac-generate-btn" class="button button-primary button-large">🚀 Генерувати</button></p>
+            </form>
+        </div></div><?php
     }
 
-    public function generate_posts_ajax() {
-        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'amac_ajax')) {
-            wp_send_json_error(array('message' => 'Security check failed'));
-        }
-
-        $api_key = get_option('amac_api_key', '');
-        if (empty($api_key)) {
-            wp_send_json_error(array('message' => 'API ключ не налаштовано. Перейдіть до Налаштувань.'));
-        }
-
-        $license_valid      = get_option('amac_license_valid', false);
-        $articles_generated = intval(get_option('amac_total_generated', 0));
-        $test_limit         = 10;
-
-        if (!$license_valid && $articles_generated >= $test_limit) {
-            wp_send_json_error(array('message' => 'Безкоштовний ліміт вичерпано (10 статей). Придбайте ліцензію.'));
-        }
-
-        $topic        = sanitize_text_field($_POST['main_topic']);
-        $count        = min(20, max(1, intval($_POST['post_count'])));
-        $cat_id       = intval($_POST['category_id']);
-        $words        = intval($_POST['length']);
-        $add_images   = isset($_POST['add_images']);
-        $add_inline   = isset($_POST['add_inline_images']);
-        $add_tags     = isset($_POST['add_tags']);
-        $add_seo      = isset($_POST['add_seo']);
-        $add_comments = isset($_POST['add_comments']);
-
-        $titles = $this->get_titles($topic, $count, $api_key);
-        if (is_wp_error($titles)) {
-            wp_send_json_error(array('message' => $titles->get_error_message()));
-        }
-
-        $created = 0;
-        $results = array();
-
-        foreach ($titles as $i => $title) {
-            if ($i > 0) sleep(15);
-
-            $content = $this->get_article($title, $topic, $words, $api_key);
-            if (is_wp_error($content)) continue;
-            
-            // Видаляємо будь-які CSS стилі та markdown з початку контенту
-            $content = preg_replace('/^\s*<style[^>]*>.*?<\/style>\s*/is', '', $content);
-            $content = preg_replace('/^\s*```(?:css|html)?\s*/i', '', $content);
-            $content = preg_replace('/```\s*$/i', '', $content);
-            $content = trim($content);
-
-            $post_id = wp_insert_post(array(
-                'post_title'    => $title,
-                'post_content'  => $content,
-                'post_status'   => 'draft',
-                'post_category' => array($cat_id),
-                'post_type'     => 'post',
-            ));
-
-            if (is_wp_error($post_id)) continue;
-
-            $has_image      = false;
-            $comments_count = 0;
-
-            if ($add_images) {
-                $has_image = $this->add_featured_image($post_id, $title, $topic);
-            }
-            if ($add_inline) {
-                sleep(3);
-                $this->add_inline_images($post_id, $title, $topic);
-            }
-            if ($add_tags) {
-                sleep(3);
-                $this->add_tags($post_id, $title, $api_key);
-            }
-            if ($add_seo) {
-                sleep(3);
-                $this->add_seo($post_id, $title, $topic, $api_key);
-            }
-            if ($add_comments) {
-                sleep(5);
-                $comments_count = $this->add_comments_to_post($post_id, $title, $api_key);
-            }
-
-            $plain_text  = wp_strip_all_tags($content);
-            $plain_text  = preg_replace('/\s+/', ' ', $plain_text);
-            $check_text  = trim(substr($plain_text, 0, 800));
-
-            $results[] = array(
-                'title'          => $title,
-                'comments_count' => $comments_count,
-                'image'          => $has_image,
-                'quetext_url'    => 'https://quetext.com/?q=' . urlencode($check_text),
-            );
-            $created++;
-        }
-
-        $new_total = intval(get_option('amac_total_generated', 0)) + $created;
-        update_option('amac_total_generated', $new_total);
-        update_option('amac_last_generation', current_time('mysql'));
-
-        wp_send_json_success(array(
-            'message' => sprintf('Створено %d статей!', $created),
-            'results' => $results,
-        ));
+    public function page_settings() {
+        $s = $this->defaults(); $cats = get_categories(array('hide_empty'=>false)); $this->header_html('Settings'); ?>
+        <form method="post" class="amac-grid"><?php wp_nonce_field('amac_save_settings'); ?><input type="hidden" name="amac_save_settings" value="1">
+            <div class="amac-card"><h3>AI Provider</h3><div class="amac-field"><label>Provider</label><select name="amac_ai_provider"><option value="groq" <?php selected($s['ai_provider'],'groq'); ?>>Groq</option><option value="openai" <?php selected($s['ai_provider'],'openai'); ?>>OpenAI</option></select></div><div class="amac-field"><label>Groq API Key</label><input type="password" name="amac_api_key" value="<?php echo esc_attr($s['groq_key']); ?>"><p><a href="#" class="button amac-test-provider" data-provider="groq">Перевірити Groq</a></p></div><div class="amac-field"><label>OpenAI API Key</label><input type="password" name="amac_openai_key" value="<?php echo esc_attr($s['openai_key']); ?>"><p><a href="#" class="button amac-test-provider" data-provider="openai">Перевірити OpenAI</a></p></div></div>
+            <div class="amac-card"><h3>Фото</h3><div class="amac-help">Порядок: Pexels → Pixabay → Unsplash → Openverse. Openverse працює без ключа, але Pexels/Pixabay/Unsplash дають кращу якість.</div><div class="amac-field"><label>Pexels API Key</label><input type="password" name="amac_pexels_key" value="<?php echo esc_attr($s['pexels_key']); ?>"><span class="amac-muted">pexels.com/api</span></div><div class="amac-field"><label>Pixabay API Key</label><input type="password" name="amac_pixabay_key" value="<?php echo esc_attr($s['pixabay_key']); ?>"><span class="amac-muted">pixabay.com/api/docs</span></div><div class="amac-field"><label>Unsplash Access Key</label><input type="password" name="amac_unsplash_key" value="<?php echo esc_attr($s['unsplash_key']); ?>"><span class="amac-muted">unsplash.com/developers</span></div></div>
+            <div class="amac-card"><h3>Системні</h3><div class="amac-field"><label>Категорія за замовчуванням</label><select name="amac_default_category"><option value="0">AI/не вибрано</option><?php foreach($cats as $c) echo '<option value="'.esc_attr($c->term_id).'" '.selected($s['default_category'],$c->term_id,false).'>'.esc_html($c->name).'</option>'; ?></select></div><div class="amac-field"><label>Мова інтерфейсу/контенту</label><select name="amac_language"><option value="uk" <?php selected($s['language'],'uk'); ?>>Українська</option><option value="en" <?php selected($s['language'],'en'); ?>>English</option></select></div><div class="amac-field"><label>Посилання на товар WooCommerce</label><input name="amac_product_url" value="<?php echo esc_attr($s['product_url']); ?>"></div><label><input type="checkbox" name="amac_dev_mode" value="1" <?php checked($s['dev_mode']); ?>> Developer/Test Mode без ліміту</label><p><button class="button button-primary">Зберегти</button></p></div>
+        </form></div><?php
     }
 
-    private function get_titles($topic, $count, $api_key) {
-        $prompt = "Generate {$count} unique article titles in Ukrainian language about: {$topic}. One per line. No numbering. No explanations.";
-        $res    = $this->call_groq($prompt, $api_key, 500);
-        if (is_wp_error($res)) return $res;
-        $lines = array_filter(array_map('trim', explode("\n", $res)));
-        while (count($lines) < $count) {
-            $lines[] = $topic . ' — поради #' . (count($lines) + 1);
-        }
-        return array_slice($lines, 0, $count);
+    public function page_license() { $s = $this->defaults(); $this->header_html('License'); ?>
+        <div class="amac-grid"><div class="amac-card"><h3>Ліцензія</h3><p>Для стартового продажу через WooCommerce/PayPal. Повна перевірка через UAServer Hub буде додана наступним релізом без зміни інтерфейсу.</p><form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>"><input type="hidden" name="action" value="amac_license_verify"><?php wp_nonce_field('amac_license'); ?><div class="amac-field"><label>License Key</label><input name="license_key" value="<?php echo esc_attr($s['license_key']); ?>"></div><p><button class="button button-primary">Активувати</button> <a class="button" target="_blank" href="<?php echo esc_url($s['product_url']); ?>">Купити</a></p></form></div><div class="amac-card"><h3>Умови</h3><ul><li>Free: <?php echo intval($this->free_limit); ?> статей.</li><li>Pro: до 3 доменів.</li><li>localhost не рахується.</li></ul></div></div></div><?php }
+
+    public function ajax_test_provider() {
+        check_ajax_referer('amac3_nonce', 'nonce'); if (!current_user_can('manage_options')) wp_send_json_error(array('message'=>'No access'));
+        $p = sanitize_text_field($_POST['provider'] ?? 'groq'); $s=$this->defaults();
+        $key = $p==='openai' ? $s['openai_key'] : $s['groq_key']; if (!$key) wp_send_json_error(array('message'=>'Ключ порожній'));
+        $r = $this->ai_call('Reply OK only.', 10, $p); if (is_wp_error($r)) wp_send_json_error(array('message'=>$r->get_error_message()));
+        wp_send_json_success(array('message'=>'API працює: '.$r));
     }
 
-    private function get_article($title, $topic, $words, $api_key) {
-        $prompt = "Write an article in Ukrainian. Title: {$title}. Topic: {$topic}. Length: {$words} words. Format with HTML: h2, p, ul, li. Don't repeat title. Return only HTML code. DO NOT include any CSS styles, markdown code blocks, or backticks. Return pure HTML only.";
-        $res    = $this->call_groq($prompt, $api_key, 3000);
-        if (is_wp_error($res)) return $res;
-        return wp_kses($res, array(
-            'h2'     => array(),
-            'h3'     => array(),
-            'p'      => array(),
-            'ul'     => array(),
-            'ol'     => array(),
-            'li'     => array(),
-            'strong' => array(),
-            'em'     => array(),
-        ));
+    public function ajax_generate() {
+        check_ajax_referer('amac3_nonce','nonce'); if (!current_user_can('manage_options')) wp_send_json_error(array('message'=>'No access'));
+        $s=$this->defaults(); if (!$s['groq_key'] && !$s['openai_key']) wp_send_json_error(array('message'=>'Введіть Groq або OpenAI API Key у Settings.'));
+        $generated=(int)get_option('amac_total_generated',0); if (!$s['license_valid'] && !$s['dev_mode'] && $generated >= $this->free_limit) wp_send_json_error(array('message'=>'Free-ліміт 20 статей вичерпано. Активуйте ліцензію або увімкніть Developer Mode для тесту.'));
+        $topic=sanitize_text_field(wp_unslash($_POST['topic'] ?? '')); if (!$topic) wp_send_json_error(array('message'=>'Тема порожня'));
+        $count=min(20,max(1,(int)($_POST['count'] ?? 1))); if (!$s['license_valid'] && !$s['dev_mode']) $count=min($count, max(0, $this->free_limit-$generated));
+        $words=(int)($_POST['words'] ?? 900); $status=in_array($_POST['status'] ?? 'draft',array('draft','publish'),true)?$_POST['status']:'draft';
+        $category=(int)($_POST['category'] ?? 0); $results=array();
+        $titles=$this->generate_titles($topic,$count); if (is_wp_error($titles)) wp_send_json_error(array('message'=>$titles->get_error_message()));
+        $cluster_posts=array();
+        foreach($titles as $idx=>$title){
+            $data=$this->generate_article_package($topic,$title,$words); if (is_wp_error($data)) continue;
+            $cat_id=$category ?: $this->ensure_category($data['category'] ?: $topic);
+            $post_id=wp_insert_post(array('post_title'=>$title,'post_content'=>$data['html'],'post_status'=>$status,'post_type'=>'post','post_category'=>array($cat_id),'meta_input'=>array('_amac_generated'=>1,'_amac_quality_score'=>$data['score'])));
+            if (is_wp_error($post_id) || !$post_id) continue;
+            $cluster_posts[]=$post_id;
+            if (!empty($_POST['seo'])) $this->apply_seo($post_id,$data,$topic);
+            if (!empty($_POST['faq'])) $this->apply_faq_schema($post_id,$data['faq']);
+            if (!empty($data['tags'])) wp_set_post_tags($post_id,$data['tags']);
+            $image=false; $query=$this->image_query($topic,$title,$data);
+            if (!empty($_POST['featured'])) $image=(bool)$this->add_featured_image($post_id,$query,$title);
+            if (!empty($_POST['inline'])) $this->add_inline_images($post_id,$query,$title);
+            if (!empty($_POST['comments'])) $this->add_comments($post_id,$title);
+            $results[]=array('title'=>esc_html($title),'score'=>(int)$data['score'],'image'=>$image,'edit_url'=>get_edit_post_link($post_id,'raw'));
+            update_option('amac_total_generated', (int)get_option('amac_total_generated',0)+1);
+            if($idx>0) sleep(2);
+        }
+        if (!empty($_POST['links']) && count($cluster_posts)>1) $this->link_cluster($cluster_posts);
+        wp_send_json_success(array('message'=>'Створено '.count($results).' статей.','results'=>$results));
     }
 
-    private function add_comments_to_post($post_id, $title, $api_key) {
-        $prompt   = "Generate 4 short realistic user comments in Ukrainian for article \"{$title}\". Each on new line. No author names, no numbering.";
-        $res      = $this->call_groq($prompt, $api_key, 400);
-        if (is_wp_error($res)) return 0;
+    private function generate_titles($topic,$count){ $p="Create {$count} unique Ukrainian SEO article titles for topic: {$topic}. No numbering. One per line. Specific, commercial/useful, not clickbait."; $r=$this->ai_call($p,600); if(is_wp_error($r))return$r; $lines=array_values(array_filter(array_map(function($v){return trim(preg_replace('/^[0-9\.\-\)\s]+/u','',$v),' \t\n\r\0\x0B\"«»');},explode("\n",$r)))); while(count($lines)<$count)$lines[]=$topic.' — практичні поради #'.(count($lines)+1); return array_slice($lines,0,$count); }
 
-        $comments = array_filter(array_map('trim', explode("\n", $res)));
-        $count    = 0;
-        $names    = array('Олександр', 'Марія', 'Дмитро', 'Анна', 'Володимир', 'Оксана', 'Іван', 'Тетяна');
-
-        foreach ($comments as $comment) {
-            if (mb_strlen($comment) > 10) {
-                wp_insert_comment(array(
-                    'comment_post_ID'      => $post_id,
-                    'comment_content'      => $comment,
-                    'comment_approved'     => 1,
-                    'comment_author'       => $names[array_rand($names)],
-                    'comment_author_email' => 'user_' . rand(100, 999) . '@example.com',
-                ));
-                $count++;
-            }
-        }
-        return $count;
+    private function generate_article_package($topic,$title,$words){
+        $prompt="You are a professional Ukrainian SEO editor. Write a natural, useful, unique article, not generic AI text. Topic: {$topic}. Title: {$title}. Length about {$words} words. Return ONLY valid JSON with keys: html, meta_title, meta_description, keywords(array), tags(array), category, faq(array of objects question/answer), score(number 1-100), image_keywords(array). HTML may include h2,h3,p,ul,ol,li,strong,em,table,thead,tbody,tr,th,td,blockquote. Include useful lists, one pros/cons section if relevant, and practical advice. Do not include markdown fences.";
+        $r=$this->ai_call($prompt,4200); if(is_wp_error($r))return$r; $json=$this->extract_json($r); if(!$json) return new WP_Error('json','AI не повернув коректний JSON.');
+        $allowed=array('h2'=>array(),'h3'=>array(),'p'=>array(),'ul'=>array(),'ol'=>array(),'li'=>array(),'strong'=>array(),'em'=>array(),'table'=>array(),'thead'=>array(),'tbody'=>array(),'tr'=>array(),'th'=>array(),'td'=>array(),'blockquote'=>array(),'br'=>array());
+        $json['html']=wp_kses($json['html'] ?? '',$allowed); if(!$json['html']) return new WP_Error('empty','Порожня стаття.');
+        $json['score']=max(1,min(100,(int)($json['score'] ?? 75))); foreach(array('keywords','tags','image_keywords') as $k) if(!isset($json[$k])||!is_array($json[$k]))$json[$k]=array(); if(!isset($json['faq'])||!is_array($json['faq']))$json['faq']=array(); return $json;
     }
 
-    private function get_photo_url($keyword, $width = 1200, $height = 800) {
-        $unsplash_key = get_option('amac_unsplash_key', '');
-        $pexels_key = get_option('amac_pexels_key', '');
-        
-        $keyword_lower = strtolower($keyword);
-        $search_terms = $this->get_search_terms($keyword_lower);
-        
-        // Спроба 1: Pexels (краще для моди)
-        if (!empty($pexels_key)) {
-            $pexels_url = 'https://api.pexels.com/v1/search?query=' . urlencode($search_terms) . '&per_page=5&orientation=landscape';
-            $response = wp_remote_get($pexels_url, array(
-                'timeout' => 10,
-                'headers' => array('Authorization' => $pexels_key)
-            ));
-            
-            if (!is_wp_error($response) && isset($response['response']['code']) && $response['response']['code'] === 200) {
-                $data = json_decode(wp_remote_retrieve_body($response), true);
-                if (!empty($data['photos']) && is_array($data['photos'])) {
-                    $random_index = array_rand($data['photos']);
-                    $photo = $data['photos'][$random_index];
-                    return $photo['src']['large2x'] ?? $photo['src']['large'];
-                }
-            }
-        }
-        
-        // Спроба 2: Unsplash (резерв)
-        if (!empty($unsplash_key)) {
-            $api_url = 'https://api.unsplash.com/photos/random?query=' . urlencode($search_terms) . '&orientation=landscape&client_id=' . $unsplash_key;
-            $response = wp_remote_get($api_url, array('timeout' => 10));
-            
-            if (!is_wp_error($response) && isset($response['response']['code']) && $response['response']['code'] === 200) {
-                $data = json_decode(wp_remote_retrieve_body($response), true);
-                if (!empty($data['urls']['regular'])) {
-                    return $data['urls']['regular'];
-                }
-            }
-        }
-        
-        // Спроба 3: Прямі якісні фото
-        $fallback_images = array(
-            'https://images.pexels.com/photos/7679720/pexels-photo-7679720.jpeg?w=1200&h=800',
-            'https://images.pexels.com/photos/7679724/pexels-photo-7679724.jpeg?w=1200&h=800',
-            'https://images.pexels.com/photos/3998410/pexels-photo-3998410.jpeg?w=1200&h=800',
-            'https://images.pexels.com/photos/934067/pexels-photo-934067.jpeg?w=1200&h=800',
-            'https://images.pexels.com/photos/297933/pexels-photo-297933.jpeg?w=1200&h=800',
-            'https://images.pexels.com/photos/1284065/pexels-photo-1284065.jpeg?w=1200&h=800',
-        );
-        
-        $random_index = array_rand($fallback_images);
-        return $fallback_images[$random_index];
+    private function extract_json($text){ $text=trim(preg_replace('/^```(?:json)?|```$/m','',$text)); $data=json_decode($text,true); if(is_array($data)) return $data; if(preg_match('/\{.*\}/s',$text,$m)){ $data=json_decode($m[0],true); if(is_array($data))return$data; } return null; }
+
+    private function ai_call($prompt,$max=1500,$provider=null){ $s=$this->defaults(); $provider=$provider?:$s['ai_provider']; if($provider==='openai' && $s['openai_key']){ $res=wp_remote_post('https://api.openai.com/v1/chat/completions',array('timeout'=>100,'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['openai_key']),'body'=>wp_json_encode(array('model'=>'gpt-4o-mini','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max)))); } else { if(!$s['groq_key']) return new WP_Error('api','Groq key missing'); $res=wp_remote_post('https://api.groq.com/openai/v1/chat/completions',array('timeout'=>100,'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['groq_key']),'body'=>wp_json_encode(array('model'=>'llama-3.1-8b-instant','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max)))); }
+        if(is_wp_error($res))return$res; $body=json_decode(wp_remote_retrieve_body($res),true); if(isset($body['error']['message'])) return new WP_Error('api',$body['error']['message']); return trim($body['choices'][0]['message']['content'] ?? ''); }
+
+    private function ensure_category($name){ $name=sanitize_text_field($name); if(!$name)$name='AI Articles'; $term=term_exists($name,'category'); if($term) return (int)(is_array($term)?$term['term_id']:$term); $term=wp_insert_term($name,'category'); return is_wp_error($term)?1:(int)$term['term_id']; }
+    private function apply_seo($post_id,$data,$topic){ $desc=mb_substr(wp_strip_all_tags($data['meta_description'] ?? ''),0,155); $keys=implode(', ',array_slice($data['keywords'] ?? array($topic),0,8)); update_post_meta($post_id,'_amac_description',$desc); update_post_meta($post_id,'_amac_keywords',$keys); update_post_meta($post_id,'rank_math_description',$desc); update_post_meta($post_id,'rank_math_focus_keyword',$keys); update_post_meta($post_id,'_yoast_wpseo_metadesc',$desc); update_post_meta($post_id,'_yoast_wpseo_focuskw',$topic); }
+    private function apply_faq_schema($post_id,$faq){ if(!$faq)return; update_post_meta($post_id,'_amac_faq',$faq); }
+    public function print_schema_for_single(){ if(!is_single())return; $faq=get_post_meta(get_the_ID(),'_amac_faq',true); if(!$faq||!is_array($faq))return; $entities=array(); foreach($faq as $f){ if(empty($f['question'])||empty($f['answer']))continue; $entities[]=array('@type'=>'Question','name'=>wp_strip_all_tags($f['question']),'acceptedAnswer'=>array('@type'=>'Answer','text'=>wp_strip_all_tags($f['answer']))); } if(!$entities)return; echo "\n<script type=\"application/ld+json\">".wp_json_encode(array('@context'=>'https://schema.org','@type'=>'FAQPage','mainEntity'=>$entities),JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)."</script>\n"; }
+
+    private function image_query($topic,$title,$data=array()){
+        $source=mb_strtolower($topic.' '.$title,'UTF-8');
+        $map=array('жіноча білизна'=>'women lingerie lace underwear fashion','нижня білизна'=>'women lingerie lace underwear','білизна'=>'lingerie lace underwear','трусики'=>'women panties underwear fashion','бюстгальтер'=>'bra lingerie fashion','купальник'=>'women swimsuit beachwear','піжама'=>'silk pajamas sleepwear','корсет'=>'corset lingerie fashion','панчохи'=>'women stockings fashion','сімейний бюджет'=>'family budget personal finance','бюджет'=>'personal finance budget','wordpress'=>'wordpress website','seo'=>'seo marketing','сервер'=>'server room technology');
+        foreach($map as $k=>$v) if(mb_strpos($source,$k)!==false) return $v;
+        $kw=$data['image_keywords'] ?? array(); if(is_array($kw)&&$kw){ $clean=array(); foreach($kw as $w){ $w=strtolower(trim($w)); if($w && !preg_match('/blog|style|design|professional|computer|office|business/i',$w)) $clean[]=$w; } if($clean) return implode(' ',array_slice($clean,0,5)); }
+        if(preg_match('/[А-Яа-яІіЇїЄєҐґ]/u',$source)) return 'lifestyle product detail';
+        return preg_replace('/[^a-z0-9\s-]/i',' ',$source) ?: 'lifestyle product detail';
     }
+    private function fetch_image_url($query,$exclude=array()){ foreach(array('pexels','pixabay','unsplash','openverse') as $p){ $u=$this->{'image_'.$p}($query,$exclude); if($u)return$u; } return false; }
+    private function image_pexels($q,$exclude=array()){ $k=get_option('amac_pexels_key',''); if(!$k)return false; $r=wp_remote_get(add_query_arg(array('query'=>$q,'orientation'=>'landscape','per_page'=>10),'https://api.pexels.com/v1/search'),array('timeout'=>15,'headers'=>array('Authorization'=>$k))); if(is_wp_error($r)||wp_remote_retrieve_response_code($r)!=200)return false; $d=json_decode(wp_remote_retrieve_body($r),true); foreach(($d['photos']??array()) as $p){$u=$p['src']['large2x']??$p['src']['large']??''; if($u&&!in_array($u,$exclude,true))return esc_url_raw($u);} return false; }
+    private function image_pixabay($q,$exclude=array()){ $k=get_option('amac_pixabay_key',''); if(!$k)return false; $r=wp_remote_get(add_query_arg(array('key'=>$k,'q'=>$q,'image_type'=>'photo','orientation'=>'horizontal','safesearch'=>'true','per_page'=>10,'lang'=>'en'),'https://pixabay.com/api/'),array('timeout'=>15)); if(is_wp_error($r)||wp_remote_retrieve_response_code($r)!=200)return false; $d=json_decode(wp_remote_retrieve_body($r),true); foreach(($d['hits']??array()) as $p){$u=$p['largeImageURL']??$p['webformatURL']??''; if($u&&!in_array($u,$exclude,true))return esc_url_raw($u);} return false; }
+    private function image_unsplash($q,$exclude=array()){ $k=get_option('amac_unsplash_key',''); if(!$k)return false; $r=wp_remote_get(add_query_arg(array('query'=>$q,'orientation'=>'landscape','client_id'=>$k),'https://api.unsplash.com/photos/random'),array('timeout'=>15)); if(is_wp_error($r)||wp_remote_retrieve_response_code($r)!=200)return false; $d=json_decode(wp_remote_retrieve_body($r),true); $u=$d['urls']['regular']??''; return ($u&&!in_array($u,$exclude,true))?esc_url_raw($u):false; }
+    private function image_openverse($q,$exclude=array()){ $r=wp_remote_get(add_query_arg(array('q'=>$q,'page_size'=>10,'license_type'=>'commercial','extension'=>'jpg'),'https://api.openverse.engineering/v1/images/'),array('timeout'=>15)); if(is_wp_error($r)||wp_remote_retrieve_response_code($r)!=200)return false; $d=json_decode(wp_remote_retrieve_body($r),true); foreach(($d['results']??array()) as $p){$u=$p['url']??''; if($u&&!in_array($u,$exclude,true))return esc_url_raw($u);} return false; }
+    private function sideload($post_id,$url,$title,$featured=false){ if(!$url)return false; require_once ABSPATH.'wp-admin/includes/media.php'; require_once ABSPATH.'wp-admin/includes/file.php'; require_once ABSPATH.'wp-admin/includes/image.php'; $tmp=download_url($url,20); if(is_wp_error($tmp))return false; $file=array('name'=>sanitize_title($title).'-'.time().'-'.mt_rand(100,999).'.jpg','tmp_name'=>$tmp); $id=media_handle_sideload($file,$post_id); if(is_wp_error($id)){@unlink($tmp);return false;} update_post_meta($id,'_wp_attachment_image_alt',$title); if($featured)set_post_thumbnail($post_id,$id); return $id; }
+    private function add_featured_image($post_id,$query,$title){ $u=$this->fetch_image_url($query); return $this->sideload($post_id,$u,$title,true); }
+    private function add_inline_images($post_id,$query,$title){ $content=get_post_field('post_content',$post_id); $parts=explode('</p>',$content); if(count($parts)<4)return; $used=array(); $positions=array_unique(array((int)floor(count($parts)*.35),(int)floor(count($parts)*.65))); rsort($positions); foreach($positions as $pos){ $u=$this->fetch_image_url($query,$used); if(!$u)continue; $used[]=$u; $id=$this->sideload($post_id,$u,$title,false); if(!$id)continue; $src=wp_get_attachment_image_url($id,'large'); if(!$src)continue; $parts[$pos].='</p><figure class="amac-inline-image"><img src="'.esc_url($src).'" alt="'.esc_attr($title).'" loading="lazy" style="width:100%;height:auto;border-radius:10px"><figcaption>'.esc_html($title).'</figcaption></figure>'; } wp_update_post(array('ID'=>$post_id,'post_content'=>implode('',$parts))); }
+    private function add_comments($post_id,$title){ $r=$this->ai_call("Generate 4 short realistic Ukrainian comments for article '{$title}'. One per line. No numbering.",400); if(is_wp_error($r))return; $names=array('Олександр','Марія','Дмитро','Анна','Оксана','Іван'); foreach(array_slice(array_filter(array_map('trim',explode("\n",$r))),0,4) as $c){ if(mb_strlen($c)<10)continue; wp_insert_comment(array('comment_post_ID'=>$post_id,'comment_content'=>wp_kses_post($c),'comment_approved'=>1,'comment_author'=>$names[array_rand($names)],'comment_author_email'=>'user'.rand(100,999).'@example.com')); } }
+    private function link_cluster($ids){ foreach($ids as $id){ $content=get_post_field('post_content',$id); $links=''; foreach($ids as $other){ if($other==$id)continue; $links.='<li><a href="'.esc_url(get_permalink($other)).'">'.esc_html(get_the_title($other)).'</a></li>'; } if($links) wp_update_post(array('ID'=>$id,'post_content'=>$content.'<h2>Читайте також</h2><ul>'.$links.'</ul>')); } }
 
-    private function get_search_terms($keyword) {
-        $maps = array(
-            'білизн' => 'lingerie fashion model elegant',
-            'одеж' => 'fashion clothing style woman',
-            'мод' => 'fashion style clothing model',
-            'жінк' => 'woman female portrait beauty',
-            'заробіток' => 'business money work office',
-            'бізнес' => 'business office work meeting',
-            'комп' => 'computer laptop technology office',
-            'сайт' => 'website design coding computer',
-            'програм' => 'coding developer programmer',
-            'здоров' => 'health fitness sport wellness',
-            'їж' => 'food cooking kitchen meal',
-            'подорож' => 'travel beach vacation nature',
-            'навчан' => 'education study school book',
-            'будинок' => 'home interior house room',
-        );
-        
-        foreach ($maps as $key => $query) {
-            if (strpos($keyword, $key) !== false) {
-                return $query;
-            }
-        }
-        
-        return 'business office work technology';
-    }
-
-    private function add_featured_image($post_id, $title, $topic = '') {
-        require_once ABSPATH . 'wp-admin/includes/media.php';
-        require_once ABSPATH . 'wp-admin/includes/file.php';
-        require_once ABSPATH . 'wp-admin/includes/image.php';
-        
-        $keyword = !empty($topic) ? $topic : $title;
-        $image_url = $this->get_photo_url($keyword, 1200, 800);
-        
-        $tmp = download_url($image_url, 15);
-        if (!is_wp_error($tmp)) {
-            $file = array('name' => sanitize_title($title) . '-' . time() . '.jpg', 'tmp_name' => $tmp);
-            $aid = media_handle_sideload($file, $post_id);
-            if (!is_wp_error($aid)) {
-                set_post_thumbnail($post_id, $aid);
-                update_post_meta($aid, '_wp_attachment_image_alt', $title);
-                @unlink($tmp);
-                return true;
-            }
-            @unlink($tmp);
-        }
-        return false;
-    }
-
-    private function add_inline_images($post_id, $title, $topic = '') {
-        $content = get_post_field('post_content', $post_id);
-        $paragraphs = explode('</p>', $content);
-        if (count($paragraphs) < 3) return;
-        
-        $img_count = rand(1, 2);
-        $positions = array();
-        for ($i = 1; $i <= $img_count; $i++) {
-            $pos = round((count($paragraphs) / ($img_count + 1)) * $i);
-            if ($pos > 0 && $pos < count($paragraphs)) {
-                $positions[] = $pos;
-            }
-        }
-        $positions = array_reverse($positions);
-        
-        $keyword = !empty($topic) ? $topic : $title;
-        
-        foreach ($positions as $pos) {
-            $img_url = $this->get_photo_url($keyword, 800, 500);
-            $paragraphs[$pos - 1] .= '</p><figure style="margin:20px 0;"><img src="' . esc_url($img_url) . '" alt="' . esc_attr($title) . '" style="width:100%;border-radius:8px;" loading="lazy"><figcaption style="text-align:center;color:#666;font-size:14px;">' . esc_html($title) . '</figcaption></figure>';
-        }
-        
-        wp_update_post(array('ID' => $post_id, 'post_content' => implode('', $paragraphs)));
-    }
-
-    private function add_tags($post_id, $title, $api_key) {
-        $res = $this->call_groq("Extract 5 Ukrainian keywords for article \"{$title}\". Only words separated by commas. No explanations.", $api_key, 80);
-        if (!is_wp_error($res)) {
-            $tags = array_map('trim', explode(',', $res));
-            wp_set_post_tags($post_id, $tags);
-        }
-    }
-
-    private function add_seo($post_id, $title, $topic, $api_key) {
-        $res = $this->call_groq("For Ukrainian article \"{$title}\" about {$topic} write exactly: KEYWORDS: word1, word2, word3, word4, word5 | DESCRIPTION: (max 155 chars description)", $api_key, 200);
-        if (!is_wp_error($res)) {
-            preg_match('/KEYWORDS:\s*(.+?)(?=\||$)/i', $res, $k);
-            preg_match('/DESCRIPTION:\s*(.+?)$/i', $res, $d);
-            if (!empty($k[1])) update_post_meta($post_id, '_amac_keywords', trim($k[1]));
-            if (!empty($d[1])) update_post_meta($post_id, '_amac_description', trim($d[1]));
-        }
-    }
-
-    private function call_groq($prompt, $api_key, $max_tokens = 1500) {
-        $response = wp_remote_post('https://api.groq.com/openai/v1/chat/completions', array(
-            'timeout' => 90,
-            'headers' => array(
-                'Content-Type'  => 'application/json',
-                'Authorization' => 'Bearer ' . $api_key,
-            ),
-            'body' => json_encode(array(
-                'model'       => 'llama-3.1-8b-instant',
-                'messages'    => array(array('role' => 'user', 'content' => $prompt)),
-                'temperature' => 0.8,
-                'max_tokens'  => $max_tokens,
-            )),
-        ));
-
-        if (is_wp_error($response)) return $response;
-
-        $body = json_decode(wp_remote_retrieve_body($response), true);
-        if (isset($body['error'])) return new WP_Error('api', $body['error']['message']);
-
-        return trim($body['choices'][0]['message']['content']);
-    }
-
-    public function check_github_updates($transient) {
-        if (empty($transient->checked)) return $transient;
-
-        $remote = $this->get_github_info();
-        if ($remote && version_compare(AMAC_VERSION, $remote->version, '<')) {
-            $plugin_file = plugin_basename(__FILE__);
-            $transient->response[$plugin_file] = (object) array(
-                'slug'        => 'ai-mass-article-creator',
-                'new_version' => $remote->version,
-                'package'     => $remote->download_url,
-                'tested'      => '6.5',
-            );
-        }
-        return $transient;
-    }
-
-    public function github_plugin_info($false, $action, $args) {
-        if ($action !== 'plugin_information') return $false;
-        if ($args->slug !== 'ai-mass-article-creator') return $false;
-
-        $remote = $this->get_github_info();
-        if ($remote) {
-            return (object) array(
-                'name'          => 'AI Mass Article Creator',
-                'slug'          => 'ai-mass-article-creator',
-                'version'       => $remote->version,
-                'download_link' => $remote->download_url,
-                'requires'      => '5.8',
-                'tested'        => '6.5',
-                'sections'      => array(
-                    'description' => 'Generate 1-20 unique SEO articles with AI, automatic images, and 3-5 REAL user comments per article!',
-                ),
-            );
-        }
-        return $false;
-    }
-
-    private function get_github_info() {
-        $response = wp_remote_get('https://api.github.com/repos/portallcomua/ai-mass-article-creator/releases/latest');
-        if (is_wp_error($response)) return null;
-
-        $data = json_decode(wp_remote_retrieve_body($response), true);
-        if (isset($data['tag_name'], $data['zipball_url'])) {
-            return (object) array(
-                'version'      => ltrim($data['tag_name'], 'v'),
-                'download_url' => $data['zipball_url'],
-            );
-        }
-        return null;
-    }
+    public function check_github_updates($transient){ if(empty($transient->checked))return$transient; $remote=$this->github_info(); if($remote&&version_compare(AMAC_VERSION,$remote->version,'<')){ $transient->response[AMAC_PLUGIN_BASENAME]=(object)array('slug'=>'ai-mass-article-creator','new_version'=>$remote->version,'package'=>$remote->download_url,'tested'=>'6.5'); } return $transient; }
+    public function github_plugin_info($false,$action,$args){ if($action!=='plugin_information'||$args->slug!=='ai-mass-article-creator')return$false; $r=$this->github_info(); if(!$r)return$false; return (object)array('name'=>'AI Mass Article Creator','slug'=>'ai-mass-article-creator','version'=>$r->version,'download_link'=>$r->download_url,'requires'=>'5.8','tested'=>'6.5','sections'=>array('description'=>'AI SEO article generator with thematic images, SEO, FAQ Schema and internal linking.')); }
+    private function github_info(){ $res=wp_remote_get('https://api.github.com/repos/'.$this->repo.'/releases/latest',array('timeout'=>15)); if(is_wp_error($res))return null; $d=json_decode(wp_remote_retrieve_body($res),true); if(isset($d['tag_name'],$d['zipball_url'])) return (object)array('version'=>ltrim($d['tag_name'],'v'),'download_url'=>$d['zipball_url']); return null; }
 }
 
-new AI_Mass_Article_Creator();
+new AI_Mass_Article_Creator_3();
