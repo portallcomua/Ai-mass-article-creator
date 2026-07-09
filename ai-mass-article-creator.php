@@ -3,7 +3,7 @@
  * Plugin Name: AI Mass Article Creator
  * Plugin URI: https://github.com/portallcomua/Ai-mass-article-creator
  * Description: AI SEO article generator with thematic images, SEO metadata, FAQ Schema, internal linking, developer mode, WooCommerce product URL and GitHub auto-updates.
- * Version: 3.0.4
+ * Version: 3.0.5
  * Author: UAServer
  * Author URI: https://uaserver.pp.ua
  * License: GPL v2 or later
@@ -18,7 +18,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('AMAC_VERSION', '3.0.4');
+define('AMAC_VERSION', '3.0.5');
 define('AMAC_PLUGIN_FILE', __FILE__);
 define('AMAC_PLUGIN_BASENAME', plugin_basename(__FILE__));
 
@@ -766,4 +766,4 @@ final class AI_Mass_Article_Creator_3 {
 
 new AI_Mass_Article_Creator_3();
 
-// end 3.0.4
+// end 3.0.5
