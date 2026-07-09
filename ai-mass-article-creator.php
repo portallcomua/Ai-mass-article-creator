@@ -3,7 +3,7 @@
  * Plugin Name: AI Mass Article Creator
  * Plugin URI: https://github.com/portallcomua/Ai-mass-article-creator
  * Description: AI SEO article generator with thematic images, SEO metadata, FAQ Schema, internal linking, developer mode, WooCommerce product URL and GitHub auto-updates.
- * Version: 3.0.6
+ * Version: 3.0.6.1
  * Author: UAServer
  * Author URI: https://uaserver.pp.ua
  * License: GPL v2 or later
@@ -18,7 +18,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('AMAC_VERSION', '3.0.6');
+define('AMAC_VERSION', '3.0.6.1');
 define('AMAC_PLUGIN_FILE', __FILE__);
 define('AMAC_PLUGIN_BASENAME', plugin_basename(__FILE__));
 
@@ -36,15 +36,15 @@ final class AI_Mass_Article_Creator_3 {
         add_action('admin_post_amac_license_verify', array($this, 'verify_license'));
         add_action('admin_notices', array($this, 'notices'));
         add_action('wp_head', array($this, 'print_schema_for_single'), 20);
-        
-        // Фільтри для оновлення плагіна з GitHub (на два transients для надійності)
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_github_updates'));
-        add_filter('site_transient_update_plugins', array($this, 'check_github_updates'));
         add_filter('plugins_api', array($this, 'github_plugin_info'), 10, 3);
         
         // Дії для ручної перевірки оновлень
         add_action('admin_post_amac_check_updates', array($this, 'force_check_updates'));
         add_action('admin_post_amac_clear_update_cache', array($this, 'clear_update_cache'));
+
+        // Перейменування папки після завантаження ZIP з GitHub
+        add_filter('upgrader_source_selection', array($this, 'fix_github_plugin_folder'), 10, 4);
     }
 
     private function settings() {
@@ -70,7 +70,6 @@ final class AI_Mass_Article_Creator_3 {
         }
 
         delete_site_transient('update_plugins');
-        delete_transient('amac_github_info');
         wp_update_plugins();
 
         set_transient('amac_saved', 1, 30);
@@ -188,7 +187,7 @@ final class AI_Mass_Article_Creator_3 {
                     <div class="amac-field"><label>Категорія</label><select name="category"><option value="0">AI створить/обере</option><?php foreach($cats as $c) echo '<option value="'.esc_attr($c->term_id).'">'.esc_html($c->name).'</option>'; ?></select></div>
                     <div class="amac-field"><label>Статус</label><select name="status"><option value="draft">Чернетка</option><option value="publish">Опублікувати</option></select></div>
                 </div>
-                <div class="amac-checkboxes"><strong>Функції</strong><label><input type="checkbox" name="featured" checked> Головне фото</label><label><input type="checkbox" name="inline" checked> 2–3 фото в статті</label><label><input type="checkbox" name="seo" checked> SEO Rank Math / Yoast</label><label><input type="checkbox" name="faq" checked> FAQ + JSON-LD Schema</label><label><input type="checkbox" name="links" checked> Внутрішня перелінковка</label><label><input type="checkbox" name="comments" checked> Реалістичні коментарі</label></div>
+                <div class="amac-checkboxes"><strong>Функції</strong><label><input type="checkbox" name="featured" checked> Головне фото</label><label><input type="checkbox" name="inline" checked> 2–3 фото в статті</label><label><input type="checkbox" name="seo" checked> SEO Rank Math / Yoast</label><label><input type="checkbox" name="faq" checked> FAQ + JSON-LD Schema</label><label><input type="checkbox" name="links" checked> Внутрішня перелінковка</label><label><input type="checkbox" name="comments"> Реалістичні коментарі</label></div>
                 <div id="amac-progress" class="amac-progress"><span>0%</span></div><div id="amac-log" class="amac-log"></div><p><button id="amac-generate-btn" class="button button-primary button-large">🚀 Генерувати</button></p>
             </form>
         </div></div><?php
@@ -265,8 +264,8 @@ final class AI_Mass_Article_Creator_3 {
         $titles = $this->generate_titles($topic, $count);
         if (is_wp_error($titles)) wp_send_json_error(array('message'=>$titles->get_error_message()));
 
-        // Початкова пауза після запиту списку тем
-        sleep(5);
+        // Обов'язкова затримка після першого запиту тем, щоб скинути вікно TPM у Groq
+        sleep(4);
 
         $cluster_posts = array();
         foreach ($titles as $idx => $title) {
@@ -303,9 +302,9 @@ final class AI_Mass_Article_Creator_3 {
             $results[] = array('title'=>esc_html($title),'score'=>(int)$data['score'],'image'=>$image,'edit_url'=>get_edit_post_link($post_id,'raw'));
             update_option('amac_total_generated', (int)get_option('amac_total_generated',0) + 1);
             
-            // Затримка між генерацією кожної наступної статті
+            // Якщо є наступні статті, збільшуємо затримку для стабільності
             if ($idx < count($titles) - 1) {
-                sleep(6);
+                sleep(5);
             }
         }
 
@@ -330,7 +329,7 @@ final class AI_Mass_Article_Creator_3 {
     }
 
     private function generate_article_package($topic, $title, $words) {
-        // Скорочений промпт для збереження токенів (TPM)
+        // Оптимізований коротший промпт для збереження токенів (TPM)
         $prompt = "You are a Ukrainian SEO editor. Write a natural article. Topic: {$topic}. Title: {$title}. Length: {$words} words. Return ONLY valid JSON: {html, meta_title, meta_description, keywords(array), tags(array), category, faq(array of question/answer), score(1-100), image_search(string), image_negative(array)}. Use HTML tags (h2,h3,p,ul,ol,li,strong,em,table). No markdown formatting or markdown fences.";
         $r = $this->ai_call($prompt, 4000);
         if (is_wp_error($r)) return $r;
@@ -384,7 +383,9 @@ final class AI_Mass_Article_Creator_3 {
     }
 
     private function sanitize_article_html($html) {
-        $html = trim(preg_replace('/^' . '`' . '`' . '`' . '(?:html)?|' . '`' . '`' . '`' . '$/m', '', (string)$html));
+        $html = trim((string)$html);
+        // Замінено небезпечний рядок на регулярний вираз без використання «голих» зворотних лапок у коді
+        $html = preg_replace('/^`{3}(?:html)?|`{3}$/m', '', $html);
         $html = preg_replace('/<script[^>]*>.*?<\/script>/is', '', $html);
         $html = preg_replace('/<style[^>]*>.*?<\/style>/is', '', $html);
         $allowed = array('h2'=>array(),'h3'=>array(),'p'=>array(),'ul'=>array(),'ol'=>array(),'li'=>array(),'strong'=>array(),'em'=>array(),'table'=>array(),'thead'=>array(),'tbody'=>array(),'tr'=>array(),'th'=>array(),'td'=>array(),'blockquote'=>array(),'br'=>array());
@@ -392,7 +393,8 @@ final class AI_Mass_Article_Creator_3 {
     }
 
     private function extract_json($text) {
-        $text = trim(preg_replace('/^' . '`' . '`' . '`' . '(?:json)?|' . '`' . '`' . '`' . '$/m', '', (string)$text));
+        $text = trim((string)$text);
+        $text = preg_replace('/^`{3}(?:json)?|`{3}$/m', '', $text);
         $data = json_decode($text, true);
         if (is_array($data)) return $data;
         if (preg_match('/\{.*\}/s', $text, $m)) {
@@ -406,8 +408,8 @@ final class AI_Mass_Article_Creator_3 {
         $s = $this->settings();
         $provider = $provider ?: $s['ai_provider'];
         
-        $max_retries = 4;
-        $default_delay = 10;
+        $max_retries = 3;
+        $retry_delay = 5; // Початкова затримка у секундах при 429
         
         for ($attempt = 1; $attempt <= $max_retries; $attempt++) {
             if ($provider === 'openai' && $s['openai_key']) {
@@ -418,12 +420,10 @@ final class AI_Mass_Article_Creator_3 {
                 ));
             } else {
                 if (!$s['groq_key']) return new WP_Error('api','Groq key missing');
-                
-                // Використовуємо стабільну модель llama-3.3-70b-versatile
                 $res = wp_remote_post('https://api.groq.com/openai/v1/chat/completions', array(
                     'timeout'=>100,
                     'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['groq_key']),
-                    'body'=>wp_json_encode(array('model'=>'llama-3.3-70b-versatile','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max))
+                    'body'=>wp_json_encode(array('model'=>'llama-3.1-8b-instant','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max))
                 ));
             }
 
@@ -435,27 +435,11 @@ final class AI_Mass_Article_Creator_3 {
             $raw = wp_remote_retrieve_body($res);
             $body = json_decode($raw, true);
 
-            // Обробка помилки Rate Limit (429)
-            if ($code === 429) {
-                $wait_seconds = 0;
-                $err_msg = isset($body['error']['message']) ? $body['error']['message'] : '';
-                
-                if ($err_msg && preg_match('/try again in\s+([0-9\.]+)\s*s/i', $err_msg, $matches)) {
-                    $wait_seconds = (float) $matches[1];
-                } elseif ($err_msg && preg_match('/try again in\s+([0-9\.]+)\s*seconds/i', $err_msg, $matches)) {
-                    $wait_seconds = (float) $matches[1];
-                }
-                
-                if ($wait_seconds > 0) {
-                    $sleep_time = ceil($wait_seconds) + 2;
-                } else {
-                    $sleep_time = $default_delay * $attempt;
-                }
-                
-                if ($attempt < $max_retries) {
-                    sleep($sleep_time);
-                    continue;
-                }
+            // Якщо зловили 429 (Rate limit)
+            if ($code === 429 && $attempt < $max_retries) {
+                // Використовуємо експоненціальний відкат (delay * attempt)
+                sleep($retry_delay * $attempt);
+                continue;
             }
 
             if ($code < 200 || $code >= 300) {
@@ -471,7 +455,7 @@ final class AI_Mass_Article_Creator_3 {
             return $content;
         }
         
-        return new WP_Error('api', 'Перевищено ліміт запитів до API. Спробуйте змінити провайдера або почекати 1 хвилину.');
+        return new WP_Error('api', 'Превищено ліміт запитів до AI API. Спробуйте ще раз за хвилину.');
     }
 
     private function ensure_category($name) {
@@ -532,7 +516,7 @@ final class AI_Mass_Article_Creator_3 {
         $source_l = mb_strtolower($source, 'UTF-8');
         $map = array(
             'жіноча білизна'=>'women lingerie lace underwear fashion','нижня білизна'=>'women lingerie lace underwear','білизна'=>'lingerie lace underwear','трусики'=>'women panties underwear fashion','бюстгальтер'=>'bra lingerie fashion','купальник'=>'women swimsuit beachwear','піжама'=>'silk pajamas sleepwear','корсет'=>'corset lingerie fashion','панчохи'=>'women stockings fashion',
-            'sport'=>'fitness gym workout sports equipment','фітнес'=>'fitness gym workout','тренування'=>'fitness workout exercise','йога'=>'yoga mat exercise','футбол'=>'football soccer sport','баскетбол'=>'basketball court sport',
+            'спорт'=>'fitness gym workout sports equipment','фітнес'=>'fitness gym workout','тренування'=>'fitness workout exercise','йога'=>'yoga mat exercise','футбол'=>'football soccer sport','баскетбол'=>'basketball court sport',
             'авто'=>'car automobile vehicle','автомобіль'=>'car automobile vehicle','ремонт авто'=>'car repair mechanic garage','шини'=>'car tires garage','двигун'=>'car engine mechanic',
             'книги'=>'books reading library','книга'=>'book reading library','дітей'=>'children books reading education','освіта'=>'education classroom learning',
             'промисловість'=>'industrial factory manufacturing','завод'=>'industrial factory manufacturing','виробництво'=>'manufacturing factory production','обладнання'=>'industrial equipment machinery',
@@ -707,88 +691,48 @@ final class AI_Mass_Article_Creator_3 {
         }
     }
 
-    /**
-     * ПЕРЕВІРКА ОНОВЛЕНЬ ЧЕРЕЗ GITHUB
-     */
     public function check_github_updates($transient) {
-        if (!is_object($transient)) {
-            return $transient;
-        }
-
-        if (empty($transient->checked)) {
-            return $transient;
-        }
+        if (empty($transient->checked)) return $transient;
 
         $remote = $this->github_info();
 
         if ($remote && version_compare(AMAC_VERSION, $remote->version, '<')) {
-            $plugin_slug = AMAC_PLUGIN_BASENAME;
-
-            if (!isset($transient->response) || !is_array($transient->response)) {
-                $transient->response = array();
-            }
-
-            $transient->response[$plugin_slug] = (object) array(
-                'id'            => 'github.com/' . $this->repo,
-                'slug'          => 'ai-mass-article-creator',
-                'plugin'        => $plugin_slug,
-                'new_version'   => $remote->version,
-                'package'       => $remote->download_url,
-                'tested'        => '6.5',
-                'url'           => 'https://github.com/' . $this->repo,
-                'compatibility' => new stdClass(),
+            $transient->response[AMAC_PLUGIN_BASENAME] = (object) array(
+                'slug' => 'ai-mass-article-creator',
+                'plugin' => AMAC_PLUGIN_BASENAME,
+                'new_version' => $remote->version,
+                'package' => $remote->download_url,
+                'tested' => '6.5',
+                'url' => 'https://github.com/'.$this->repo,
             );
-
-            // Видаляємо плагін зі списку тих, що не потребують оновлення
-            if (isset($transient->no_update[$plugin_slug])) {
-                unset($transient->no_update[$plugin_slug]);
-            }
         }
 
         return $transient;
     }
 
-    /**
-     * ДЕТАЛЬНА ІНФОРМАЦІЯ ПРО ПЛАГІН ДЛЯ СИСТЕМИ WORDPRESS
-     */
     public function github_plugin_info($false, $action, $args) {
-        if ($action !== 'plugin_information' || !isset($args->slug) || $args->slug !== 'ai-mass-article-creator') {
-            return $false;
-        }
-        
+        if ($action !== 'plugin_information' || $args->slug !== 'ai-mass-article-creator') return $false;
         $r = $this->github_info();
         if (!$r) return $false;
-        
         return (object) array(
-            'name'          => 'AI Mass Article Creator',
-            'slug'          => 'ai-mass-article-creator',
-            'version'       => $r->version,
-            'download_link' => $r->download_url,
-            'requires'      => '5.8',
-            'tested'        => '6.5',
-            'sections'      => array(
-                'description' => 'AI SEO article generator with thematic images, SEO, FAQ Schema, internal linking and WooCommerce integration.',
-                'changelog'   => !empty($r->body) ? make_clickable($r->body) : 'Дрібні виправлення та покращення.'
-            ),
+            'name'=>'AI Mass Article Creator',
+            'slug'=>'ai-mass-article-creator',
+            'version'=>$r->version,
+            'download_link'=>$r->download_url,
+            'requires'=>'5.8',
+            'tested'=>'6.5',
+            'sections'=>array('description'=>'AI SEO article generator with thematic images, SEO, FAQ Schema and internal linking.','changelog'=>$r->body),
         );
     }
 
-    /**
-     * ОТРИМАННЯ ДАНИХ З РЕПОЗИТОРІЮ GITHUB З ПРАВИЛЬНИМИ ЗАГОЛОВКАМИ
-     */
     private function github_info() {
         $cached = get_transient('amac_github_info');
         if ($cached) return $cached;
 
-        $args = array(
+        $res = wp_remote_get('https://api.github.com/repos/'.$this->repo.'/releases/latest', array(
             'timeout' => 15,
-            'headers' => array(
-                'Accept'     => 'application/vnd.github+json',
-                'User-Agent' => 'WordPress/' . get_bloginfo('version') . '; ' . home_url()
-            )
-        );
-
-        $res = wp_remote_get('https://api.github.com/repos/' . $this->repo . '/releases/latest', $args);
+            'headers' => array('Accept' => 'application/vnd.github+json')
+        ));
 
         if (is_wp_error($res)) return null;
 
@@ -796,8 +740,7 @@ final class AI_Mass_Article_Creator_3 {
 
         if (empty($d['tag_name'])) return null;
 
-        // Покращений парсинг тегів: коректно обробляє v3.0.6, v.3.0.6 та 3.0.6
-        $version = preg_replace('/^v\.?/i', '', $d['tag_name']);
+        $version = ltrim($d['tag_name'], 'v');
         $download_url = '';
 
         if (!empty($d['assets']) && is_array($d['assets'])) {
@@ -816,18 +759,41 @@ final class AI_Mass_Article_Creator_3 {
         if (!$download_url) return null;
 
         $info = (object) array(
-            'version'      => $version,
+            'version' => $version,
             'download_url' => $download_url,
-            'body'         => isset($d['body']) ? $d['body'] : ''
+            'body' => isset($d['body']) ? $d['body'] : ''
         );
 
-        // Кешуємо на 1 годину про всяк випадок
         set_transient('amac_github_info', $info, HOUR_IN_SECONDS);
 
         return $info;
+    }
+
+    public function fix_github_plugin_folder($source, $remote_source, $upgrader, $hook_extra) {
+        global $wp_filesystem;
+
+        if (empty($hook_extra['plugin']) || $hook_extra['plugin'] !== AMAC_PLUGIN_BASENAME) {
+            return $source;
+        }
+
+        $correct_source = trailingslashit($remote_source) . 'ai-mass-article-creator';
+
+        if ($source === $correct_source) {
+            return $source;
+        }
+
+        if ($wp_filesystem->exists($correct_source)) {
+            $wp_filesystem->delete($correct_source, true);
+        }
+
+        if ($wp_filesystem->move($source, $correct_source, true)) {
+            return $correct_source;
+        }
+
+        return $source;
     }
 }
 
 new AI_Mass_Article_Creator_3();
 
-// end 3.0.6
+// End і версія 3.0.6.1
