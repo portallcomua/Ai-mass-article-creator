@@ -372,6 +372,364 @@ final class AI_Mass_Article_Creator_3 {
     }
 
     private function sanitize_article_html($html) {
-        $html = trim(preg_replace('/^
-http://googleusercontent.com/immersive_entry_chip/0
-http://googleusercontent.com/immersive_entry_chip/1
+        $html = trim(preg_replace('/^' . '`' . '`' . '`' . '(?:html)?|' . '`' . '`' . '`' . '$/m', '', (string)$html));
+        $html = preg_replace('/<script[^>]*>.*?<\/script>/is', '', $html);
+        $html = preg_replace('/<style[^>]*>.*?<\/style>/is', '', $html);
+        $allowed = array('h2'=>array(),'h3'=>array(),'p'=>array(),'ul'=>array(),'ol'=>array(),'li'=>array(),'strong'=>array(),'em'=>array(),'table'=>array(),'thead'=>array(),'tbody'=>array(),'tr'=>array(),'th'=>array(),'td'=>array(),'blockquote'=>array(),'br'=>array());
+        return wp_kses($html, $allowed);
+    }
+
+    private function extract_json($text) {
+        $text = trim(preg_replace('/^' . '`' . '`' . '`' . '(?:json)?|' . '`' . '`' . '`' . '$/m', '', (string)$text));
+        $data = json_decode($text, true);
+        if (is_array($data)) return $data;
+        if (preg_match('/\{.*\}/s', $text, $m)) {
+            $data = json_decode($m[0], true);
+            if (is_array($data)) return $data;
+        }
+        return null;
+    }
+
+    private function ai_call($prompt, $max = 1500, $provider = null) {
+        $s = $this->settings();
+        $provider = $provider ?: $s['ai_provider'];
+        if ($provider === 'openai' && $s['openai_key']) {
+            $res = wp_remote_post('https://api.openai.com/v1/chat/completions', array(
+                'timeout'=>100,
+                'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['openai_key']),
+                'body'=>wp_json_encode(array('model'=>'gpt-4o-mini','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max))
+            ));
+        } else {
+            if (!$s['groq_key']) return new WP_Error('api','Groq key missing');
+            $res = wp_remote_post('https://api.groq.com/openai/v1/chat/completions', array(
+                'timeout'=>100,
+                'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['groq_key']),
+                'body'=>wp_json_encode(array('model'=>'llama-3.1-8b-instant','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max))
+            ));
+        }
+        if (is_wp_error($res)) return $res;
+        $code = wp_remote_retrieve_response_code($res);
+        $raw = wp_remote_retrieve_body($res);
+        $body = json_decode($raw, true);
+        if ($code < 200 || $code >= 300) return new WP_Error('api', 'AI API HTTP '.$code.': '.mb_substr($raw, 0, 300));
+        if (isset($body['error']['message'])) return new WP_Error('api', $body['error']['message']);
+        $content = trim($body['choices'][0]['message']['content'] ?? '');
+        if ($content === '') return new WP_Error('api', 'AI повернув порожню відповідь.');
+        return $content;
+    }
+
+    private function ensure_category($name) {
+        $name = sanitize_text_field($name);
+        if (!$name) $name = 'AI Articles';
+        $term = term_exists($name, 'category');
+        if ($term) return (int)(is_array($term) ? $term['term_id'] : $term);
+        $term = wp_insert_term($name, 'category');
+        return is_wp_error($term) ? 1 : (int)$term['term_id'];
+    }
+
+    private function apply_seo($post_id, $data, $topic) {
+        $desc = mb_substr(wp_strip_all_tags($data['meta_description'] ?? ''), 0, 155);
+        $keys = implode(', ', array_slice($data['keywords'] ?? array($topic), 0, 8));
+        update_post_meta($post_id, '_amac_description', $desc);
+        update_post_meta($post_id, '_amac_keywords', $keys);
+        update_post_meta($post_id, 'rank_math_description', $desc);
+        update_post_meta($post_id, 'rank_math_focus_keyword', $keys);
+        update_post_meta($post_id, '_yoast_wpseo_metadesc', $desc);
+        update_post_meta($post_id, '_yoast_wpseo_focuskw', $topic);
+    }
+
+    private function apply_faq_schema($post_id, $faq) {
+        if ($faq) update_post_meta($post_id, '_amac_faq', $faq);
+    }
+
+    public function print_schema_for_single() {
+        if (!is_single()) return;
+        $faq = get_post_meta(get_the_ID(), '_amac_faq', true);
+        if (!$faq || !is_array($faq)) return;
+        $entities = array();
+        foreach ($faq as $f) {
+            if (empty($f['question']) || empty($f['answer'])) continue;
+            $entities[] = array('@type'=>'Question','name'=>wp_strip_all_tags($f['question']),'acceptedAnswer'=>array('@type'=>'Answer','text'=>wp_strip_all_tags($f['answer'])));
+        }
+        if (!$entities) return;
+        echo "\n<script type=\"application/ld+json\">" . wp_json_encode(array('@context'=>'https://schema.org','@type'=>'FAQPage','mainEntity'=>$entities), JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) . "</script>\n";
+    }
+
+    private function generate_image_query_ai($topic, $title) {
+        $prompt = "For stock photo search, convert this Ukrainian topic/title into ONE best English search query with concrete visual objects. Avoid abstract words. Return JSON only: {\"search\":\"...\",\"negative\":[\"...\"]}. Topic: {$topic}. Title: {$title}. Examples: жіноча білизна => women lingerie lace underwear fashion. спорт => fitness gym workout sports equipment. авто ремонт => car repair mechanic garage. книги для дітей => children books reading education. промисловість => industrial factory manufacturing. Never use blog, style, design, professional, business, office, computer, laptop unless topic is really computers.";
+        $r = $this->ai_call($prompt, 300);
+        $fallback = array('search'=>$this->fallback_image_query($topic.' '.$title), 'negative'=>$this->default_negative_keywords($topic));
+        if (is_wp_error($r)) return $fallback;
+        $j = $this->extract_json($r);
+        if (!$j || empty($j['search'])) return $fallback;
+        return array('search'=>$this->clean_image_query($j['search']), 'negative'=>is_array($j['negative'] ?? null) ? $j['negative'] : $fallback['negative']);
+    }
+
+    private function image_plan($topic, $title, $data = array()) {
+        $search = !empty($data['image_search']) ? $data['image_search'] : '';
+        if (!$search || $this->is_bad_image_query($search)) $search = $this->fallback_image_query($topic.' '.$title);
+        $negative = !empty($data['image_negative']) && is_array($data['image_negative']) ? $data['image_negative'] : array();
+        return array('search'=>$this->clean_image_query($search), 'negative'=>array_unique(array_merge($negative, $this->default_negative_keywords($topic))));
+    }
+
+    private function fallback_image_query($source) {
+        $source_l = mb_strtolower($source, 'UTF-8');
+        $map = array(
+            'жіноча білизна'=>'women lingerie lace underwear fashion','нижня білизна'=>'women lingerie lace underwear','білизна'=>'lingerie lace underwear','трусики'=>'women panties underwear fashion','бюстгальтер'=>'bra lingerie fashion','купальник'=>'women swimsuit beachwear','піжама'=>'silk pajamas sleepwear','корсет'=>'corset lingerie fashion','панчохи'=>'women stockings fashion',
+            'спорт'=>'fitness gym workout sports equipment','фітнес'=>'fitness gym workout','тренування'=>'fitness workout exercise','йога'=>'yoga mat exercise','футбол'=>'football soccer sport','баскетбол'=>'basketball court sport',
+            'авто'=>'car automobile vehicle','автомобіль'=>'car automobile vehicle','ремонт авто'=>'car repair mechanic garage','шини'=>'car tires garage','двигун'=>'car engine mechanic',
+            'книги'=>'books reading library','книга'=>'book reading library','дітей'=>'children books reading education','освіта'=>'education classroom learning',
+            'промисловість'=>'industrial factory manufacturing','завод'=>'industrial factory manufacturing','виробництво'=>'manufacturing factory production','обладнання'=>'industrial equipment machinery',
+            'елеватор'=>'grain elevator silo agriculture','агро'=>'agriculture field farming','зерно'=>'grain wheat agriculture','ферма'=>'farm agriculture field',
+            'сімейний budget'=>'family budget personal finance','бюджет'=>'personal finance budget','фінанси'=>'personal finance money','гроші'=>'money personal finance',
+            'wordpress'=>'wordpress website','seo'=>'seo marketing analytics','сайт'=>'website design screen'
+        );
+        foreach ($map as $k=>$v) if (mb_strpos($source_l, $k) !== false) return $v;
+        if (preg_match('/[А-Яа-яІіЇїЄєҐґ]/u', $source_l)) return 'relevant editorial photo';
+        return $this->clean_image_query($source_l ?: 'relevant editorial photo');
+    }
+
+    private function clean_image_query($q) {
+        $q = strtolower(trim(wp_strip_all_tags((string)$q)));
+        $q = preg_replace('/[^a-z0-9\s\-]/i', ' ', $q);
+        $q = preg_replace('/\s+/', ' ', $q);
+        $bad = $this->bad_words();
+        $parts = array_filter(explode(' ', $q), function($w) use ($bad){ return $w !== '' && !in_array($w, $bad, true); });
+        $out = implode(' ', array_slice($parts, 0, 8));
+        return $out ?: 'relevant editorial photo';
+    }
+
+    private function is_bad_image_query($q) {
+        $q = strtolower((string)$q);
+        if (trim($q) === '' || strlen(trim($q)) < 4) return true;
+        foreach (array('blog','style','design','professional','business','office','computer','laptop','desktop','coffee','cow','landscape') as $bad) {
+            if (preg_match('/\b'.preg_quote($bad,'/').'\b/i', $q)) return true;
+        }
+        return false;
+    }
+
+    private function bad_words() {
+        return array('blog','style','design','professional','business','office','computer','laptop','desktop','coffee','cow','landscape','random','abstract');
+    }
+
+    private function default_negative_keywords($topic='') {
+        $base = array('computer','laptop','desktop','office','business','coffee','cow','landscape','random','abstract','cartoon','illustration');
+        $t = mb_strtolower((string)$topic, 'UTF-8');
+        if (mb_strpos($t, 'авто') !== false || mb_strpos($t, 'машин') !== false) return array_diff($base, array());
+        if (mb_strpos($t, 'комп') !== false || mb_strpos($t, 'ноут') !== false || mb_strpos($t, 'офіс') !== false) return array('cow','landscape','random','abstract');
+        return $base;
+    }
+
+    private function fetch_image_url($plan, $exclude = array()) {
+        $query = is_array($plan) ? $plan['search'] : $plan;
+        $negative = is_array($plan) ? ($plan['negative'] ?? array()) : array();
+        foreach (array('pexels','pixabay','unsplash','openverse') as $p) {
+            $u = $this->{'image_'.$p}($query, $exclude, $negative);
+            if ($u) return $u;
+        }
+        return false;
+    }
+
+    private function photo_is_allowed($text, $negative) {
+        $text = strtolower((string)$text);
+        foreach ((array)$negative as $bad) {
+            $bad = strtolower(trim((string)$bad));
+            if ($bad && preg_match('/\b'.preg_quote($bad,'/').'\b/i', $text)) return false;
+        }
+        return true;
+    }
+
+    private function image_pexels($q, $exclude=array(), $negative=array()) {
+        $k = get_option('amac_pexels_key',''); if (!$k) return false;
+        $r = wp_remote_get(add_query_arg(array('query'=>$q,'orientation'=>'landscape','per_page'=>15),'https://api.pexels.com/v1/search'), array('timeout'=>15,'headers'=>array('Authorization'=>$k)));
+        if (is_wp_error($r) || wp_remote_retrieve_response_code($r) != 200) return false;
+        $d = json_decode(wp_remote_retrieve_body($r), true);
+        foreach (($d['photos'] ?? array()) as $p) {
+            $txt = ($p['alt'] ?? '') . ' ' . ($p['photographer'] ?? '');
+            $u = $p['src']['large2x'] ?? $p['src']['large'] ?? '';
+            if ($u && !in_array($u, $exclude, true) && $this->photo_is_allowed($txt, $negative)) return esc_url_raw($u);
+        }
+        return false;
+    }
+
+    private function image_pixabay($q, $exclude=array(), $negative=array()) {
+        $k = get_option('amac_pixabay_key',''); if (!$k) return false;
+        $r = wp_remote_get(add_query_arg(array('key'=>$k,'q'=>$q,'image_type'=>'photo','orientation'=>'horizontal','safesearch'=>'true','per_page'=>15,'lang'=>'en'),'https://pixabay.com/api/'), array('timeout'=>15));
+        if (is_wp_error($r) || wp_remote_retrieve_response_code($r) != 200) return false;
+        $d = json_decode(wp_remote_retrieve_body($r), true);
+        foreach (($d['hits'] ?? array()) as $p) {
+            $txt = ($p['tags'] ?? '');
+            $u = $p['largeImageURL'] ?? $p['webformatURL'] ?? '';
+            if ($u && !in_array($u, $exclude, true) && $this->photo_is_allowed($txt, $negative)) return esc_url_raw($u);
+        }
+        return false;
+    }
+
+    private function image_unsplash($q, $exclude=array(), $negative=array()) {
+        $k = get_option('amac_unsplash_key',''); if (!$k) return false;
+        $r = wp_remote_get(add_query_arg(array('query'=>$q,'orientation'=>'landscape','content_filter'=>'high','client_id'=>$k),'https://api.unsplash.com/photos/random'), array('timeout'=>15));
+        if (is_wp_error($r) || wp_remote_retrieve_response_code($r) != 200) return false;
+        $d = json_decode(wp_remote_retrieve_body($r), true);
+        $txt = ($d['description'] ?? '') . ' ' . ($d['alt_description'] ?? '');
+        $u = $d['urls']['regular'] ?? '';
+        return ($u && !in_array($u, $exclude, true) && $this->photo_is_allowed($txt, $negative)) ? esc_url_raw($u) : false;
+    }
+
+    private function image_openverse($q, $exclude=array(), $negative=array()) {
+        $r = wp_remote_get(add_query_arg(array('q'=>$q,'page_size'=>15,'license_type'=>'commercial','extension'=>'jpg'),'https://api.openverse.engineering/v1/images/'), array('timeout'=>15));
+        if (is_wp_error($r) || wp_remote_retrieve_response_code($r) != 200) return false;
+        $d = json_decode(wp_remote_retrieve_body($r), true);
+        foreach (($d['results'] ?? array()) as $p) {
+            $txt = ($p['title'] ?? '') . ' ' . ($p['tags'] ?? '') . ' ' . ($p['creator'] ?? '');
+            $u = $p['url'] ?? '';
+            if ($u && !in_array($u, $exclude, true) && $this->photo_is_allowed($txt, $negative)) return esc_url_raw($u);
+        }
+        return false;
+    }
+
+    private function sideload($post_id, $url, $title, $featured=false) {
+        if (!$url) return false;
+        require_once ABSPATH.'wp-admin/includes/media.php';
+        require_once ABSPATH.'wp-admin/includes/file.php';
+        require_once ABSPATH.'wp-admin/includes/image.php';
+        $tmp = download_url($url, 20);
+        if (is_wp_error($tmp)) return false;
+        $file = array('name'=>sanitize_title($title).'-'.time().'-'.mt_rand(100,999).'.jpg','tmp_name'=>$tmp);
+        $id = media_handle_sideload($file, $post_id);
+        if (is_wp_error($id)) { @unlink($tmp); return false; }
+        update_post_meta($id, '_wp_attachment_image_alt', sanitize_text_field($title));
+        wp_update_post(array('ID'=>$id, 'post_title'=>sanitize_text_field($title), 'post_excerpt'=>sanitize_text_field($title)));
+        if ($featured) set_post_thumbnail($post_id, $id);
+        return $id;
+    }
+
+    private function add_featured_image($post_id, $plan, $title) {
+        $u = $this->fetch_image_url($plan);
+        return $this->sideload($post_id, $u, $title, true);
+    }
+
+    private function add_inline_images($post_id, $plan, $title) {
+        $content = get_post_field('post_content', $post_id);
+        $parts = explode('</p>', $content);
+        if (count($parts) < 4) return;
+        $used = array();
+        $positions = array_unique(array((int)floor(count($parts)*.35), (int)floor(count($parts)*.65)));
+        rsort($positions);
+        foreach ($positions as $pos) {
+            $u = $this->fetch_image_url($plan, $used);
+            if (!$u) continue;
+            $used[] = $u;
+            $id = $this->sideload($post_id, $u, $title, false);
+            if (!$id) continue;
+            $src = wp_get_attachment_image_url($id, 'large');
+            if (!$src) continue;
+            $parts[$pos] .= '</p><figure class="amac-inline-image"><img src="'.esc_url($src).'" alt="'.esc_attr($title).'" loading="lazy" style="width:100%;height:auto;border-radius:10px"><figcaption>'.esc_html($title).'</figcaption></figure>';
+        }
+        wp_update_post(array('ID'=>$post_id,'post_content'=>implode('', $parts)));
+    }
+
+    private function add_comments($post_id, $title) {
+        $r = $this->ai_call("Generate 4 short realistic Ukrainian comments for article '{$title}'. One per line. No numbering.", 400);
+        if (is_wp_error($r)) return;
+        $names = array('Олександр','Марія','Дмитро','Анна','Оксана','Іван');
+        foreach (array_slice(array_filter(array_map('trim', explode("\n", $r))), 0, 4) as $c) {
+            $c = preg_replace('/^[0-9\.\-\)\s]+/u', '', $c);
+            if (mb_strlen($c) < 10) continue;
+            wp_insert_comment(array('comment_post_ID'=>$post_id,'comment_content'=>wp_kses_post($c),'comment_approved'=>1,'comment_author'=>$names[array_rand($names)],'comment_author_email'=>'user'.rand(100,999).'@example.com'));
+        }
+    }
+
+    private function link_cluster($ids) {
+        foreach ($ids as $id) {
+            $content = get_post_field('post_content', $id);
+            $links = '';
+            foreach ($ids as $other) {
+                if ($other == $id) continue;
+                $links .= '<li><a href="'.esc_url(get_permalink($other)).'">'.esc_html(get_the_title($other)).'</a></li>';
+            }
+            if ($links) wp_update_post(array('ID'=>$id,'post_content'=>$content.'<h2>Читайте також</h2><ul>'.$links.'</ul>'));
+        }
+    }
+
+    public function check_github_updates($transient) {
+        if (empty($transient->checked)) return $transient;
+
+        $remote = $this->github_info();
+
+        if ($remote && version_compare(AMAC_VERSION, $remote->version, '<')) {
+            $transient->response[AMAC_PLUGIN_BASENAME] = (object) array(
+                'slug' => 'ai-mass-article-creator',
+                'plugin' => AMAC_PLUGIN_BASENAME,
+                'new_version' => $remote->version,
+                'package' => $remote->download_url,
+                'tested' => '6.5',
+                'url' => 'https://github.com/'.$this->repo,
+            );
+        }
+
+        return $transient;
+    }
+
+    public function github_plugin_info($false, $action, $args) {
+        if ($action !== 'plugin_information' || $args->slug !== 'ai-mass-article-creator') return $false;
+        $r = $this->github_info();
+        if (!$r) return $false;
+        return (object) array(
+            'name'=>'AI Mass Article Creator',
+            'slug'=>'ai-mass-article-creator',
+            'version'=>$r->version,
+            'download_link'=>$r->download_url,
+            'requires'=>'5.8',
+            'tested'=>'6.5',
+            'sections'=>array('description'=>'AI SEO article generator with thematic images, SEO, FAQ Schema and internal linking.','changelog'=>$r->body),
+        );
+    }
+
+    private function github_info() {
+        $cached = get_transient('amac_github_info');
+        if ($cached) return $cached;
+
+        $res = wp_remote_get('https://api.github.com/repos/'.$this->repo.'/releases/latest', array(
+            'timeout' => 15,
+            'headers' => array('Accept' => 'application/vnd.github+json')
+        ));
+
+        if (is_wp_error($res)) return null;
+
+        $d = json_decode(wp_remote_retrieve_body($res), true);
+
+        if (empty($d['tag_name'])) return null;
+
+        $version = ltrim($d['tag_name'], 'v');
+        $download_url = '';
+
+        if (!empty($d['assets']) && is_array($d['assets'])) {
+            foreach ($d['assets'] as $asset) {
+                if (!empty($asset['name']) && preg_match('/ai-mass-article-creator.*\.zip$/i', $asset['name'])) {
+                    $download_url = $asset['browser_download_url'];
+                    break;
+                }
+            }
+        }
+
+        if (!$download_url && !empty($d['zipball_url'])) {
+            $download_url = $d['zipball_url'];
+        }
+
+        if (!$download_url) return null;
+
+        $info = (object) array(
+            'version' => $version,
+            'download_url' => $download_url,
+            'body' => isset($d['body']) ? $d['body'] : ''
+        );
+
+        set_transient('amac_github_info', $info, HOUR_IN_SECONDS);
+
+        return $info;
+    }
+}
+
+new AI_Mass_Article_Creator_3();
+
+// end 3.0.4
