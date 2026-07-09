@@ -261,6 +261,9 @@ final class AI_Mass_Article_Creator_3 {
         $titles = $this->generate_titles($topic, $count);
         if (is_wp_error($titles)) wp_send_json_error(array('message'=>$titles->get_error_message()));
 
+        // Обов'язкова затримка після першого запиту тем, щоб скинути вікно TPM у Groq
+        sleep(4);
+
         $cluster_posts = array();
         foreach ($titles as $idx => $title) {
             $data = $this->generate_article_package($topic, $title, $words);
@@ -295,7 +298,11 @@ final class AI_Mass_Article_Creator_3 {
             if (!empty($_POST['comments'])) $this->add_comments($post_id, $title);
             $results[] = array('title'=>esc_html($title),'score'=>(int)$data['score'],'image'=>$image,'edit_url'=>get_edit_post_link($post_id,'raw'));
             update_option('amac_total_generated', (int)get_option('amac_total_generated',0) + 1);
-            if ($idx > 0) sleep(2);
+            
+            // Якщо є наступні статті, збільшуємо затримку для стабільності
+            if ($idx < count($titles) - 1) {
+                sleep(5);
+            }
         }
 
         if (!empty($_POST['links']) && count($cluster_posts) > 1) $this->link_cluster($cluster_posts);
@@ -319,8 +326,9 @@ final class AI_Mass_Article_Creator_3 {
     }
 
     private function generate_article_package($topic, $title, $words) {
-        $prompt = "You are a professional Ukrainian SEO editor. Write a natural, useful, unique article, not generic AI text. Topic: {$topic}. Title: {$title}. Length about {$words} words. Return ONLY valid JSON with keys: html, meta_title, meta_description, keywords(array), tags(array), category, faq(array of objects question/answer), score(number 1-100), image_search(string), image_negative(array). image_search must be the best English stock-photo search query using concrete physical subjects, not abstract words. image_negative must include irrelevant objects that must not appear in photos. HTML may include h2,h3,p,ul,ol,li,strong,em,table,thead,tbody,tr,th,td,blockquote. Include useful lists, one pros/cons section if relevant, and practical advice. Do not include markdown fences.";
-        $r = $this->ai_call($prompt, 4200);
+        // Оптимізований коротший промпт для збереження токенів (TPM)
+        $prompt = "You are a Ukrainian SEO editor. Write a natural article. Topic: {$topic}. Title: {$title}. Length: {$words} words. Return ONLY valid JSON: {html, meta_title, meta_description, keywords(array), tags(array), category, faq(array of question/answer), score(1-100), image_search(string), image_negative(array)}. Use HTML tags (h2,h3,p,ul,ol,li,strong,em,table). No markdown formatting or markdown fences.";
+        $r = $this->ai_call($prompt, 4000);
         if (is_wp_error($r)) return $r;
         $json = $this->extract_json($r);
         if (!$json) return $this->generate_article_html_fallback($topic, $title, $words);
@@ -393,29 +401,55 @@ final class AI_Mass_Article_Creator_3 {
     private function ai_call($prompt, $max = 1500, $provider = null) {
         $s = $this->settings();
         $provider = $provider ?: $s['ai_provider'];
-        if ($provider === 'openai' && $s['openai_key']) {
-            $res = wp_remote_post('https://api.openai.com/v1/chat/completions', array(
-                'timeout'=>100,
-                'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['openai_key']),
-                'body'=>wp_json_encode(array('model'=>'gpt-4o-mini','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max))
-            ));
-        } else {
-            if (!$s['groq_key']) return new WP_Error('api','Groq key missing');
-            $res = wp_remote_post('https://api.groq.com/openai/v1/chat/completions', array(
-                'timeout'=>100,
-                'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['groq_key']),
-                'body'=>wp_json_encode(array('model'=>'llama-3.1-8b-instant','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max))
-            ));
+        
+        $max_retries = 3;
+        $retry_delay = 5; // Початкова затримка у секундах при 429
+        
+        for ($attempt = 1; $attempt <= $max_retries; $attempt++) {
+            if ($provider === 'openai' && $s['openai_key']) {
+                $res = wp_remote_post('https://api.openai.com/v1/chat/completions', array(
+                    'timeout'=>100,
+                    'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['openai_key']),
+                    'body'=>wp_json_encode(array('model'=>'gpt-4o-mini','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max))
+                ));
+            } else {
+                if (!$s['groq_key']) return new WP_Error('api','Groq key missing');
+                $res = wp_remote_post('https://api.groq.com/openai/v1/chat/completions', array(
+                    'timeout'=>100,
+                    'headers'=>array('Content-Type'=>'application/json','Authorization'=>'Bearer '.$s['groq_key']),
+                    'body'=>wp_json_encode(array('model'=>'llama-3.1-8b-instant','messages'=>array(array('role'=>'user','content'=>$prompt)),'temperature'=>0.65,'max_tokens'=>$max))
+                ));
+            }
+
+            if (is_wp_error($res)) {
+                return $res;
+            }
+
+            $code = wp_remote_retrieve_response_code($res);
+            $raw = wp_remote_retrieve_body($res);
+            $body = json_decode($raw, true);
+
+            // Якщо зловили 429 (Rate limit)
+            if ($code === 429 && $attempt < $max_retries) {
+                // Використовуємо експоненціальний відкат (delay * attempt)
+                sleep($retry_delay * $attempt);
+                continue;
+            }
+
+            if ($code < 200 || $code >= 300) {
+                return new WP_Error('api', 'AI API HTTP '.$code.': '.mb_substr($raw, 0, 300));
+            }
+            if (isset($body['error']['message'])) {
+                return new WP_Error('api', $body['error']['message']);
+            }
+            $content = trim($body['choices'][0]['message']['content'] ?? '');
+            if ($content === '') {
+                return new WP_Error('api', 'AI повернув порожню відповідь.');
+            }
+            return $content;
         }
-        if (is_wp_error($res)) return $res;
-        $code = wp_remote_retrieve_response_code($res);
-        $raw = wp_remote_retrieve_body($res);
-        $body = json_decode($raw, true);
-        if ($code < 200 || $code >= 300) return new WP_Error('api', 'AI API HTTP '.$code.': '.mb_substr($raw, 0, 300));
-        if (isset($body['error']['message'])) return new WP_Error('api', $body['error']['message']);
-        $content = trim($body['choices'][0]['message']['content'] ?? '');
-        if ($content === '') return new WP_Error('api', 'AI повернув порожню відповідь.');
-        return $content;
+        
+        return new WP_Error('api', 'Превищено ліміт запитів до AI API. Спробуйте ще раз за хвилину.');
     }
 
     private function ensure_category($name) {
