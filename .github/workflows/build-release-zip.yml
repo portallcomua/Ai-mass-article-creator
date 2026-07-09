@@ -1,0 +1,36 @@
+name: Build Release ZIP
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare plugin ZIP
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PLUGIN_DIR="ai-mass-article-creator"
+          ZIP_NAME="ai-mass-article-creator-${VERSION}.zip"
+
+          rm -rf "$PLUGIN_DIR" "$ZIP_NAME"
+          mkdir -p "$PLUGIN_DIR"
+
+          cp ai-mass-article-creator.php "$PLUGIN_DIR/"
+          if [ -f readme.txt ]; then cp readme.txt "$PLUGIN_DIR/"; fi
+          if [ -f CHANGELOG.md ]; then cp CHANGELOG.md "$PLUGIN_DIR/"; fi
+
+          zip -r "$ZIP_NAME" "$PLUGIN_DIR"
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+
+      - name: Upload ZIP to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_NAME }}
