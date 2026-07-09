@@ -1,10 +1,9 @@
-```php
 <?php
 /**
  * Plugin Name: AI Mass Article Creator
  * Plugin URI: https://github.com/portallcomua/Ai-mass-article-creator
  * Description: AI SEO article generator with thematic images, SEO metadata, FAQ Schema, internal linking, developer mode, WooCommerce product URL and GitHub auto-updates.
- * Version: 3.0.6
+ * Version: 3.0.4
  * Author: UAServer
  * Author URI: https://uaserver.pp.ua
  * License: GPL v2 or later
@@ -19,7 +18,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('AMAC_VERSION', '3.0.6');
+define('AMAC_VERSION', '3.0.4');
 define('AMAC_PLUGIN_FILE', __FILE__);
 define('AMAC_PLUGIN_BASENAME', plugin_basename(__FILE__));
 
@@ -38,8 +37,9 @@ final class AI_Mass_Article_Creator_3 {
         add_action('admin_notices', array($this, 'notices'));
         add_action('wp_head', array($this, 'print_schema_for_single'), 20);
         
-        // Фільтри для оновлення плагіна з GitHub
+        // Фільтри для оновлення плагіна з GitHub (на два transients для надійності)
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_github_updates'));
+        add_filter('site_transient_update_plugins', array($this, 'check_github_updates'));
         add_filter('plugins_api', array($this, 'github_plugin_info'), 10, 3);
         
         // Дії для ручної перевірки оновлень
@@ -711,13 +711,23 @@ final class AI_Mass_Article_Creator_3 {
      * ПЕРЕВІРКА ОНОВЛЕНЬ ЧЕРЕЗ GITHUB
      */
     public function check_github_updates($transient) {
-        if (empty($transient->checked)) return $transient;
+        if (!is_object($transient)) {
+            return $transient;
+        }
+
+        if (empty($transient->checked)) {
+            return $transient;
+        }
 
         $remote = $this->github_info();
 
         if ($remote && version_compare(AMAC_VERSION, $remote->version, '<')) {
             $plugin_slug = AMAC_PLUGIN_BASENAME;
-            
+
+            if (!isset($transient->response) || !is_array($transient->response)) {
+                $transient->response = array();
+            }
+
             $transient->response[$plugin_slug] = (object) array(
                 'id'            => 'github.com/' . $this->repo,
                 'slug'          => 'ai-mass-article-creator',
@@ -728,6 +738,11 @@ final class AI_Mass_Article_Creator_3 {
                 'url'           => 'https://github.com/' . $this->repo,
                 'compatibility' => new stdClass(),
             );
+
+            // Видаляємо плагін зі списку тих, що не потребують оновлення
+            if (isset($transient->no_update[$plugin_slug])) {
+                unset($transient->no_update[$plugin_slug]);
+            }
         }
 
         return $transient;
@@ -765,7 +780,6 @@ final class AI_Mass_Article_Creator_3 {
         $cached = get_transient('amac_github_info');
         if ($cached) return $cached;
 
-        // Важливий заголовок User-Agent для запобігання помилкам 403 від GitHub API
         $args = array(
             'timeout' => 15,
             'headers' => array(
@@ -782,7 +796,8 @@ final class AI_Mass_Article_Creator_3 {
 
         if (empty($d['tag_name'])) return null;
 
-        $version = ltrim($d['tag_name'], 'v');
+        // Покращений парсинг тегів: коректно обробляє v3.0.6, v.3.0.6 та 3.0.6
+        $version = preg_replace('/^v\.?/i', '', $d['tag_name']);
         $download_url = '';
 
         if (!empty($d['assets']) && is_array($d['assets'])) {
@@ -806,7 +821,7 @@ final class AI_Mass_Article_Creator_3 {
             'body'         => isset($d['body']) ? $d['body'] : ''
         );
 
-        // Кешуємо на 1 годину, щоб не перевищувати ліміти запитів до GitHub
+        // Кешуємо на 1 годину про всяк випадок
         set_transient('amac_github_info', $info, HOUR_IN_SECONDS);
 
         return $info;
@@ -815,6 +830,4 @@ final class AI_Mass_Article_Creator_3 {
 
 new AI_Mass_Article_Creator_3();
 
-// end 3.0.6
-
-```
+// end 3.0.4
