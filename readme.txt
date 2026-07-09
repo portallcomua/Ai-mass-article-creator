@@ -4,7 +4,7 @@ Tags: ai, articles, seo, content, groq, openai
 Requires at least: 5.8
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 3.0.0
+Stable tag: 3.0.6.1
 License: GPLv2 or later
 
 AI SEO article generator with thematic images, SEO metadata, FAQ Schema, internal linking and WooCommerce licensing readiness.
